@@ -1,22 +1,24 @@
 # 차량 ROS 2 워크스페이스
 
-차량 모델 시각화, MCU 모터 제어 연동, 브라우저 영상·상태 모니터링 및 원격 조종을 위한 ROS 2 워크스페이스다. rosbag 재생과 SLAM 실험용 launch 파일도 포함한다.
+이 워크스페이스는 차체 모델·센서 bringup, MCU 피드백 수집, 브라우저 영상·차량 상태 조회를 제공한다. 문서는 현재 소스 구현을 설명하며, 실행·빌드 성공을 보증하는 검증 보고서가 아니다.
 
-모터 제어는 외부 **Wheel-Dragoon MCU 펌웨어**와 시리얼로 통신한다. ROS 노드는 속도 명령을 전달하고 상태를 수신하며, 바퀴별 구동 분배와 모터 드라이버 제어는 MCU가 담당한다. MCU 펌웨어와 센서 드라이버는 이 저장소에 포함되어 있지 않다.
+MCU 브리지는 수신 전용이다. `/cmd_vel` 구독, `0x03` 제어 송신, 웹 주행 제어, 휠 오도메트리 발행은 구현하지 않는다. MCU 자체의 AUTO 제어 지원과 이 ROS 구현의 범위는 다르다.
 
 ## 구성
 
 | 패키지 | 역할 | 빌드 방식 |
 | --- | --- | --- |
 | [`my_car_package`](src/my_car_package) | 차체 URDF/Xacro·메시, TF, RViz, 센서·모터 통합 bringup 및 bag/SLAM 실험 launch | `ament_cmake` |
-| [`my_car_motor_bridge`](src/my_car_motor_bridge/README.md) | `/cmd_vel` → MCU 시리얼 명령, 모터 상태 수신, CAN 진단 모드 | `ament_python` |
-| [`my_car_web_monitor`](src/my_car_web_monitor/README.md) | FastAPI 웹 UI, WebRTC 영상, ROS 원격 조종, 모터 상태 대시보드 | `ament_python` |
+| [`my_car_mcu_bridge`](src/my_car_mcu_bridge/README.md) | `0x85/86/87` 피드백 수신 및 20Hz 집계 | `ament_python` |
+| [`my_car_web_monitor`](src/my_car_web_monitor/README.md) | FastAPI 웹 UI, WebRTC 영상, LiDAR·차량 상태 조회 | `ament_python` |
+| [`my_car_interfaces`](src/my_car_interfaces/README.md) | 피드백·상태·집계 전용 ROS 메시지 | `ament_cmake` / rosidl |
 
 ```text
 ros2_ws/
 ├── src/
+│   ├── my_car_interfaces/
 │   ├── my_car_package/
-│   ├── my_car_motor_bridge/
+│   ├── my_car_mcu_bridge/
 │   ├── my_car_web_monitor/
 │   └── camera_ros/         # 별도로 클론한 외부 카메라 드라이버 (Git 추적 제외)
 ├── agent/                  # 개발 계획 및 작업 보고서
@@ -54,21 +56,18 @@ T265와 X4-Pro 센서 드라이버는 기존 워크스페이스에서 유지하�
 
 ```mermaid
 flowchart LR
-    Browser[브라우저] <-->|HTTP / WebSocket / WebRTC| Web[my_car_web_monitor]
-    Camera[Picamera2 또는 합성 영상] --> Web
-    CameraROS[libcamera / camera_ros] -->|Image 토픽| Web
-    T265 -->|Fisheye Image 토픽| Web
-    Web -->|/cmd_vel · Twist| Bridge[my_car_motor_bridge]
-    Bridge -->|/motor_bridge_node/status · JSON| Web
-    Bridge <-->|USB Serial| MCU[Wheel-Dragoon MCU]
-    MCU <-->|CAN| Motors[모터 드라이버 A/B]
-    T265[T265 / realsense2_camera] -->|/camera/pose/sample · TF| Mapping[SLAM / RViz]
-    Lidar[X4-Pro / ydlidar_ros2_driver] -->|/scan| Mapping
+    MCU[Wheel-Dragoon MCU] -->|USB 0x85 / 0x86 / 0x87| Bridge[mcu_bridge_node]
+    Bridge -->|WheelFeedback / VoltageFeedback / McuStatus| Aggregate[telemetry_aggregator]
+    Bridge -->|LinkState| Aggregate
+    Aggregate -->|/telemetry · RobotTelemetry · 20Hz| Web[web_monitor_node]
+    Camera[Picamera2 / 합성 / ROS 이미지] --> Web
+    Lidar[LaserScan /scan] --> Web
+    Web -->|HTTP / WebSocket / WebRTC| Browser[브라우저]
 ```
 
-기본 `control` 모드에서 모터 브리지는 50 Hz로 속도 명령을 전송한다. 상태는 System Status v2를 우선 사용하며, 설정에 따라 legacy 상태를 수신할 수 있다. 웹 대시보드는 MCU 상태, 드라이버 전압, 네 바퀴의 RPM·엔코더 카운트·엔코더 추정 회전수·엔코더 추정 거리·오류를 표시한다. `valid` 플래그와 마지막 수신 경과 시간을 함께 확인하며, 오래된 값은 현재 측정값으로 표시하지 않는다.
+브리지는 검증·디코딩한 패킷마다 즉시 발행한다. 집계 노드는 각 스트림의 최신값과 수신 여부·경과시간을 묶는다. 네 휠과 전압은 비동기 데이터이며 집계 메시지는 동시 측정 스냅샷이 아니다. ROS 내부에서는 전용 메시지를 사용하고 웹 경계에서 JSON으로 변환한다.
 
-오류 비트는 발생 횟수가 아닌 잔여 보고 횟수로 관리된다. 새 감지마다 10으로 갱신하고 정상 송신한 `0x82`마다 1씩 차감한다. 출력 차단 여부는 오류 종류와 현재 입력에 따라 다르므로 최종 MCU 상태를 함께 확인한다. 자세한 규칙은 [모터 브리지 문서](src/my_car_motor_bridge/README.md#firmware-error-reporting-rules)를 따른다.
+패킷·오류 의미는 [MCU 브리지 문서](src/my_car_mcu_bridge/README.md), 필드·단위는 [인터페이스 문서](src/my_car_interfaces/README.md)를 참고한다.
 
 ## 환경 준비 및 빌드
 
@@ -102,7 +101,7 @@ rosdep install --from-paths src --ignore-src -r -y
 cd src/my_car_web_monitor
 uv venv --python /usr/bin/python3 --system-site-packages
 source .venv/bin/activate
-uv sync --active --extra test
+uv sync --active
 
 cd ../..
 python -m colcon build --symlink-install
@@ -118,13 +117,13 @@ head -1 install/my_car_web_monitor/lib/my_car_web_monitor/web_monitor_node
 웹 기능이 필요 없다면 가상환경 설정 없이 ROS 환경에서 필요한 패키지만 빌드할 수 있다.
 
 ```bash
-colcon build --symlink-install --packages-select my_car_package my_car_motor_bridge
+colcon build --symlink-install --packages-up-to my_car_package my_car_mcu_bridge
 source install/local_setup.bash
 ```
 
 ## 실행
 
-새 터미널마다 ROS 환경과 이 워크스페이스를 불러온다. 웹 실행과 아래 테스트에는 가상환경도 활성화한다.
+새 터미널마다 ROS 환경과 이 워크스페이스를 불러온다. 웹 실행에는 가상환경도 활성화한다.
 
 ```bash
 source ../../ros2_ws/install/setup.bash
@@ -149,9 +148,9 @@ ros2 launch my_car_package bringup.launch.py
 | 전·후방 카메라 | `my_car_package/rpi_cameras.launch.py` | `launch/yaml/cameras.yaml` 사용, `/front_camera/image_raw`·`/rear_camera/image_raw` 발행 |
 | YDLidar X4-Pro | `ydlidar_ros2_driver/ydlidar_launch.py` | 드라이버 기본 `params/ydlidar.yaml` 사용. `X4-Pro.yaml`을 직접 지정하지 않음 |
 | T265 | `realsense2_camera/rs_launch.py` | `device_type:=t265`, `enable_accel:=true`, `enable_gyro:=true` 전달 |
-| 모터 브리지 | `my_car_motor_bridge/motor_bridge.launch.py` | `config/motor_bridge.yaml` 및 하위 launch의 기본값 사용 |
+| 모터 브리지 | `my_car_mcu_bridge/mcu_bridge.launch.py` | `config/mcu_bridge.yaml` 및 하위 launch의 기본값 사용 |
 
-`camera_ros`, `ydlidar_ros2_driver`, `realsense2_camera`, `my_car_motor_bridge`가 실행 환경에서 검색되어야 하며, 연결한 장치에 맞게 카메라 인덱스와 시리얼 포트 설정을 확인한다. 현재 bringup에는 구성 요소별 실행 여부를 선택하는 인자가 없으므로, 일부만 실행하려면 아래 개별 실행 명령을 사용한다. 이미 실행 중인 동일 드라이버나 모터 브리지는 중복 실행하지 않는다.
+`camera_ros`, `ydlidar_ros2_driver`, `realsense2_camera`, `my_car_mcu_bridge`가 실행 환경에서 검색되어야 하며, 연결한 장치에 맞게 카메라 인덱스와 시리얼 포트 설정을 확인한다. 현재 bringup에는 구성 요소별 실행 여부를 선택하는 인자가 없으므로, 일부만 실행하려면 아래 개별 실행 명령을 사용한다. 이미 실행 중인 동일 드라이버나 모터 브리지는 중복 실행하지 않는다.
 
 웹 모니터, 차체 모델·TF, RViz, SLAM은 별도로 실행한다. bringup 실행 후 별도 터미널에 동일한 환경을 불러오고 웹 모니터를 연결할 수 있다.
 
@@ -170,27 +169,31 @@ CAMERA_SOURCE=synthetic ros2 run my_car_web_monitor web_monitor_node
 
 브라우저에서 `http://localhost:8443` 또는 `http://<실행 장비 IP>:8443`에 접속한다. 기본 포트는 8443이지만 현재 서버는 **HTTP**로 실행된다. 합성 영상은 카메라만 대체하며 ROS 환경은 필요하다. 모터 브리지를 실행하지 않아도 웹 화면과 영상을 확인할 수 있고, 모터 상태는 수신 대기 상태로 남는다.
 
-### 모터 브리지 연동
+### MCU 피드백 수신
 
 ```bash
-ros2 launch my_car_motor_bridge motor_bridge.launch.py
+ros2 launch my_car_mcu_bridge mcu_bridge.launch.py
 ```
 
-기본 시리얼 장치는 `/dev/ttyACM0`, 통신 속도는 `115200`이다. 설정은 [`motor_bridge.yaml`](src/my_car_motor_bridge/config/motor_bridge.yaml)에 있으며, 변경 후 노드를 재시작해야 한다. 다른 포트를 일회성으로 지정하려면 launch 대신 노드를 직접 실행한다.
+수신 노드와 집계 노드를 함께 실행한다. 기본 포트 `/dev/ttyACM0`, baudrate `115200`, 읽기 타이머 `100Hz`는 [mcu_bridge.yaml](src/my_car_mcu_bridge/config/mcu_bridge.yaml)에서 설정한다. 패킷 발행 주기는 읽기 타이머 주기가 아니라 실제 수신에 따른다.
+
+노드 하나씩 실행하려면 launch 대신 별도 터미널에서 다음을 사용한다.
 
 ```bash
-ros2 run my_car_motor_bridge motor_bridge_node --ros-args -p port:=/dev/ttyACM1
+ros2 run my_car_mcu_bridge mcu_bridge_node --ros-args -p port:=/dev/ttyACM1
 ```
-
-별도 터미널에서 웹 노드를 실행하고 상태를 확인한다.
 
 ```bash
-ros2 topic echo /motor_bridge_node/status
+ros2 run my_car_mcu_bridge telemetry_aggregator
 ```
 
-실제 차량에 ROS 속도 명령을 적용하려면 MCU가 CONTROL 상태이고 RC 선택이 AUTO여야 한다. 시리얼 포트는 한 프로세스만 사용한다. 웹 입력 중단·연결 종료 시에는 0 속도를 발행하고, 모터 브리지는 기본 0.3초 명령 타임아웃 이후 zero/disable을 전송한다. 웹의 정지 명령은 `/cmd_vel`의 0 속도이며 MCU의 ESTOP 플래그 설정과는 별개다.
+조회 예시:
 
-CAN 진단용 `serial_mode:=bridge`에서는 `/cmd_vel` 제어와 모터 상태 발행이 비활성화된다. 첫 유효 CAN 요청이 MCU를 BRIDGE로 전환하며, 노드 종료만으로 MCU가 CONTROL로 복귀하지 않는다. 모드 전환과 진단 요청은 [모터 브리지 문서](src/my_car_motor_bridge/README.md)를 참고한다.
+```bash
+ros2 topic echo /telemetry
+```
+
+시리얼 포트는 브리지 하나가 소유한다. 브리지는 정상 종료 시에도 제어·정지 패킷을 보내지 않는다. MCU가 BRIDGE 모드이면 이 ROS 노드가 CONTROL로 복귀시키지 않으며, 일반 피드백을 받으려면 MCU가 CONTROL이어야 한다. 구형 프로토콜 fallback과 CAN 진단 요청 인터페이스는 없다.
 
 ### Raspberry Pi 카메라
 
@@ -289,37 +292,9 @@ T265의 `mono8`을 비롯해 `8UC1`, `rgb8`, `bgr8`, `rgba8`, `bgra8`과 JPEG/PN
 
 ## 웹 설정과 인터페이스
 
-현재 웹 설정은 ROS 파라미터가 아닌 **환경변수**로 읽는다. 아래 기본값은 [`config.py`](src/my_car_web_monitor/my_car_web_monitor/config.py) 기준이다.
+환경변수로 설정한다. 기본 주소는 `http://<장비 IP>:8443`이며 TLS 설정은 없다. `MOTOR_STATUS_TOPIC`의 기본값은 `/telemetry`, 타입은 `my_car_interfaces/msg/RobotTelemetry`다. 카메라·WebRTC·HTTP/WS 설정과 UI 정보는 [웹 문서](src/my_car_web_monitor/README.md)를 참고한다.
 
-| 환경변수 | 기본값 | 용도 |
-| --- | --- | --- |
-| `HOST` / `PORT` | `0.0.0.0` / `8443` | 서버 주소와 포트 |
-| `CAMERA_SOURCE` | `picamera2` | 기본 소스, `synthetic` 지원 |
-| `CAMERA_STREAMS` | 빈 문자열 | `이름:소스타입[:장치 또는 ROS 토픽]`을 쉼표로 나열 |
-| `CAMERA_WIDTH` / `CAMERA_HEIGHT` / `CAMERA_FPS` | `1280` / `720` / `15` | 로컬 영상 크기와 전송 FPS. ROS 영상은 원본 크기 사용 |
-| `CMD_VEL_TOPIC` | `/cmd_vel` | 속도 명령 발행 토픽 |
-| `MOTOR_STATUS_TOPIC` | `/motor_bridge_node/status` | 모터 상태 구독 토픽 |
-| `CONTROL_LINEAR_SPEED` | `2.0` | 선속도 슬라이더 최대값 및 명령 제한, m/s |
-| `CONTROL_LINEAR_SPEED_MIN` / `CONTROL_LINEAR_SPEED_DEFAULT` | `0.0` / `0.2` | 선속도 슬라이더 최소값 / 초기값, m/s |
-| `CONTROL_ANGULAR_SPEED` | `3.0` | 각속도 슬라이더 최대값 및 명령 제한, rad/s |
-| `CONTROL_ANGULAR_SPEED_MIN` / `CONTROL_ANGULAR_SPEED_DEFAULT` | `0.0` / `0.3` | 각속도 슬라이더 최소값 / 초기값, rad/s |
-| `CONTROL_WATCHDOG_TIMEOUT` | `0.3` | 웹 조종 입력 타임아웃, 초 |
-
-각 축은 유한한 `0 ≤ 최소값 ≤ 초기값 ≤ 최대값`이어야 한다. 최소값은 슬라이더에 적용되며 정지 명령은 0을 보낸다. 브라우저는 조종 입력 유지 중 10 Hz로 명령을 보낸다. 예를 들어 최대값과 초기값을 따로 지정하려면 다음과 같이 실행한다.
-
-```bash
-CAMERA_SOURCE=synthetic CONTROL_LINEAR_SPEED=0.3 CONTROL_LINEAR_SPEED_DEFAULT=0.2 CONTROL_ANGULAR_SPEED=1.0 CONTROL_ANGULAR_SPEED_DEFAULT=0.3 \
-  ros2 run my_car_web_monitor web_monitor_node
-```
-
-| 엔드포인트 | 역할 |
-| --- | --- |
-| `GET /` | 브라우저 UI |
-| `GET /health` | 웹 서버 응답 확인 |
-| `GET /streams`, `POST /offer` | 영상 목록과 WebRTC 연결 협상 |
-| `GET /control/config`, `GET /control/status` | 조종 설정과 최신 상태 조회 |
-| `/ws/status` | 읽기 전용 상태 스트림, 여러 관찰자 지원 |
-| `/ws/control` | 조종 입력, 동시 조종 세션 1개 |
+`/ws/status`는 읽기 전용이다. `/ws/control`은 비활성 오류를 보내고 종료하며, `/control/config`의 남아 있는 설정은 현재 주행 제어 기능을 뜻하지 않는다.
 
 ## rosbag 및 SLAM 실험
 
@@ -337,35 +312,11 @@ bag 재생 launch에는 `bag_file`, `play_speed`(기본 `0.1`), `use_rviz`(기�
 
 `description.launch.py`는 전달받은 `use_sim_time`을 노드 파라미터에 반영하지 않으므로, bag 시간 기반으로 확장할 때 이 부분도 확인해야 한다.
 
-## 테스트
+## 검증 상태와 문서
 
-ROS 환경과 웹 가상환경을 활성화한 워크스페이스 루트에서 실행한다.
+현재 split telemetry 구현과 UI에 대한 빌드·테스트·실물 통신 검증은 이 문서 정리 작업에서 수행하지 않았다. 기존 웹 테스트에는 구형 상태·제어 전제를 사용하는 항목이 남아 있으므로 현행 규격 검증으로 간주하지 않는다. 구형 MCU 테스트는 `agent/archive/pre_split_telemetry/`에 보관되어 있다.
 
-```bash
-python -m pytest src/my_car_motor_bridge/test src/my_car_web_monitor/test
-```
-
-모터 브리지 테스트는 가상 시리얼 장치와 ROS 노드·토픽을 사용한다. 웹 테스트는 상태 API와 상태 스트림 등을 검사한다. 브라우저 UI 테스트는 디버깅 포트 9229로 실행 중인 Chromium이 있을 때 다음과 같이 실행하며, `MOTOR_UI_BROWSER_URL`이 없으면 건너뛴다.
-
-```bash
-MOTOR_UI_BROWSER_URL=http://127.0.0.1:9229 \
-  python -m pytest src/my_car_web_monitor/test/test_motor_status_ui.py
-```
-
-모터 브리지는 colcon으로도 테스트할 수 있다.
-
-```bash
-python -m colcon test --packages-select my_car_motor_bridge
-python -m colcon test-result --verbose
-```
-
-실제 바퀴 방향, 전압 단위, 통신 단절 복구 및 MCU 모드 전환은 별도 하드웨어 검증 대상이다.
-
-## 현재 범위와 관련 문서
-
-현재 영상 소스는 `picamera2`, `synthetic`, `ros_image`, `ros_compressed`를 지원한다. `bringup.launch.py`로 전·후방 카메라·T265·LiDAR·모터 브리지를 함께 실행할 수 있으며, 웹 모니터·차체 모델·RViz·SLAM은 별도로 실행한다.
-
-- [모터 브리지 프로토콜·파라미터·진단 가이드](src/my_car_motor_bridge/README.md)
-- [웹 모니터 상세 문서](src/my_car_web_monitor/README.md): 초기 설계 내용도 포함하므로 실제 설정은 코드와 이 문서의 기본값을 확인한다.
-- [모터 브리지 변경 보고서](agent/ros2_motor_bridge_update_report.md)
-- [웹 상태 UI 변경 보고서](agent/web_monitor_status_ui_report.md)
+- [MCU 브리지: 프로토콜·토픽·집계·설정](src/my_car_mcu_bridge/README.md)
+- [전용 메시지 필드·단위](src/my_car_interfaces/README.md)
+- [웹 모니터: 설정·영상·상태 표시](src/my_car_web_monitor/README.md)
+- [개발 문서 안내 및 과거 기록](agent/README.md)

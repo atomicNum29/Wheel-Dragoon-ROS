@@ -1,0 +1,197 @@
+> **보관 전용 — 당시 문서 원문**
+> 이 파일의 “현재”는 작성 당시를 뜻한다. 경로·명령·프로토콜·검증 결과를 현행 안내로 사용하지 않는다. 현행 문서는 [개발 문서 안내](../../../../README.md)에서 확인한다.
+
+# my_car_web_monitor PLAN
+
+> **과거 작업 기록 — 현행 명세 아님 (2026-10-23 확인)**
+> 아래 계획·구현 설명과 테스트 결과는 당시 기준으로 보존한다. 현재 `0x82`는 wire version 2, payload 59/전체 63바이트이며 전류·제어출력 대신 encoder_count(int32), rx_timestamp_us(uint32), snapshot_timestamp_us(uint32)를 전달한다. 과거의 version 1/43바이트/signed controller_output 테스트 결과를 현행 코드의 검증 결과로 해석하지 않는다.
+> 오류는 재부팅까지 유지되는 latch가 아니라 감지마다 갱신하는 잔여 보고 횟수 10으로 관리한다. 정상 canonical `0x82` 송신 후에만 차감하며 재감지가 없으면 11번째부터 해제된다. Bit 9는 MAIN_DATA_STALE/500 ms가 아니라 DRIVER_RX_TIMEOUT/명령 후 3 ms 응답 쌍 미완성이다. 출력 차단은 오류 종류와 현재 입력을 구분한다.
+> 현행 구조·오류별 영향은 [모터 브리지 README](../my_car_mcu_bridge/README.md#firmware-error-reporting-rules), 웹 표시·설정 및 최신 오류 안내는 [웹 README](README.md)를 따른다. 웹은 엔코더 기반 추정 회전수·거리를 표시하며 전류·제어출력은 표시하지 않는다.
+
+
+This document tracks the intended implementation plan for `my_car_web_monitor`.
+
+## Goal
+
+Create a ROS2 package that serves a browser UI for monitoring Raspberry Pi Camera and ROS image topic streams, while publishing vehicle control commands to the existing `my_car_mcu_bridge` package through `/cmd_vel`.
+
+## Constraints And Assumptions
+
+- Target ROS distribution: same workspace target as `my_car_mcu_bridge`, currently assumed ROS2 Jazzy.
+- Package type: `ament_python`.
+- Primary control integration: publish `geometry_msgs/msg/Twist` to `/cmd_vel`.
+- Motor feedback integration: subscribe to `/mcu_bridge_node/status`.
+- First deployment target: Raspberry Pi or vehicle-side computer.
+- First network model: direct browser access over LAN or Tailscale.
+- First operator model: one browser control session at a time.
+
+## Phase 0: Package Skeleton
+
+Deliverables:
+
+- Create `src/my_car_web_monitor`.
+- Add `README.md` and `PLAN.md`.
+- Add package.xml, setup.py, setup.cfg, resource marker, and Python module directory.
+
+Acceptance criteria:
+
+- The package direction is documented.
+- The intended ROS interfaces are explicit.
+- The relationship to tmp/web_streaming2 and my_car_mcu_bridge is clear.
+
+Status: complete.
+
+## Phase 1: Minimal ROS/Web Server
+
+Deliverables:
+
+- Add an `ament_python` package skeleton.
+- Add `web_monitor_node` console script.
+- Start a FastAPI app from a ROS2 node process.
+- Serve a static `index.html`.
+- Provide `/health`.
+- Add clean shutdown handling.
+
+Acceptance criteria:
+
+- `python -m colcon build --packages-select my_car_web_monitor` succeeds.
+- `ros2 run my_car_web_monitor web_monitor_node` starts a web server.
+- Browser can open the landing UI.
+
+Risks:
+
+- ROS2 executor and asyncio event loop integration needs care.
+- Shutdown needs to stop both the web server and ROS node cleanly.
+
+Status: implemented, pending colcon build verification in a ROS-enabled shell.
+
+## Phase 2: ROS Topic Control
+
+Deliverables:
+
+- Add a control WebSocket endpoint.
+- Convert browser commands to `geometry_msgs/msg/Twist`.
+- Publish commands to configurable `/cmd_vel`.
+- Add one-active-controller policy.
+- Add zero-command on key release, disconnect, and timeout.
+- Subscribe to configurable motor status topic.
+- Forward latest motor status to the browser.
+
+Acceptance criteria:
+
+- Running `my_car_mcu_bridge` receives `/cmd_vel` from the web package.
+- UI can command forward, reverse, left, right, and stop.
+- Disconnecting the browser sends zero velocity.
+- `ros2 topic echo /cmd_vel` shows bounded commands.
+- `ros2 topic echo /mcu_bridge_node/status` remains compatible with the displayed status.
+
+Safety requirements:
+
+- Never keep publishing a nonzero command after the active browser disconnects.
+- Clamp linear and angular speeds before publishing.
+- Emergency stop must publish zero immediately.
+- Keep my_car_mcu_bridge.cmd_timeout_sec enabled as the lower-level safety net.
+
+Status: implemented for /cmd_vel publishing, single active control socket, disconnect stop, watchdog stop, and motor status mirroring. Hardware/runtime verification is still pending.
+
+## Phase 3: Camera Source Registry
+
+Deliverables:
+
+- Port the `tmp/web_streaming2` stream registry concept.
+- Support configurable stream specs:
+  - `stream_id:picamera2:camera_index`
+  - `stream_id:ros_image:/topic/name`
+  - `stream_id:ros_compressed:/topic/name`
+  - `stream_id:synthetic`
+- Add `/streams` endpoint.
+- Keep a common frame source interface.
+
+Acceptance criteria:
+
+- Synthetic stream works without camera hardware.
+- ROS raw image stream works for supported encodings.
+- ROS compressed image stream works for JPEG/PNG compressed messages.
+- Stream discovery returns stable stream metadata.
+
+## Phase 4: WebRTC Streaming
+
+Deliverables:
+
+- Port/adapt the `aiortc` WebRTC publisher structure from `tmp/web_streaming2`.
+- Add `/offer` signaling endpoint.
+- Create one video track per selected stream.
+- Serve browser JavaScript that starts/stops streams.
+
+Acceptance criteria:
+
+- Browser receives at least one synthetic stream.
+- Browser receives Raspberry Pi Camera stream on hardware.
+- Browser receives ROS image topic stream when the topic is active.
+- Closing the browser releases peer connections.
+
+Risks:
+
+- Raspberry Pi Camera support depends on system-level `picamera2` and camera stack.
+- ROS image conversion must avoid blocking the web event loop.
+- Multiple simultaneous streams can overload LTE or Raspberry Pi CPU.
+
+## Phase 5: Operator UI
+
+Deliverables:
+
+- Video grid with stream cards.
+- Connection and ICE state display.
+- Control panel with keyboard and button input.
+- Emergency stop button.
+- Motor status panel.
+- Basic latency/last-frame-age indicators.
+
+Acceptance criteria:
+
+- Operator can identify active stream, control state, and motor status at a glance.
+- UI remains usable on laptop browser and tablet-sized viewport.
+- Keyboard focus loss sends stop.
+
+## Phase 6: Launch And Deployment
+
+Deliverables:
+
+- Add launch file or documented run command with parameters.
+- Add example stream configurations.
+- Add Raspberry Pi dependency notes.
+- Add Tailscale/LAN access notes.
+
+Acceptance criteria:
+
+- Fresh workspace user can build and run the package from README.
+- Vehicle-side deployment command is documented.
+- Development command with synthetic stream is documented.
+
+## Phase 7: Hardening
+
+Deliverables:
+
+- Better telemetry: FPS, dropped frames, last command age, last frame age.
+- Reconnect behavior for camera sources.
+- Optional bitrate or resolution presets.
+- Tests for command conversion and watchdog behavior.
+- Basic lint/test integration.
+
+Acceptance criteria:
+
+- Nonzero command timeout behavior is covered by tests.
+- Stream config parsing is covered by tests.
+- Runtime errors surface clearly in UI/logs.
+
+## Open Questions
+
+- Should browser control publish directly to `/cmd_vel`, or should it publish to a package-specific topic such as `/web_cmd_vel` and use a mux later?
+- Should this package depend directly on `aiortc`, or should WebRTC be optional for environments that only need HTTP snapshot/MJPEG fallback?
+- Should motor status remain `std_msgs/msg/String` JSON, or should a typed status message be introduced later?
+- Should arming be a browser UI state, a ROS parameter, or delegated to `my_car_mcu_bridge`/MCU firmware?
+- What are the exact camera topics and encodings on the target vehicle?
+
+## Immediate Next Step
+
+Create the uv venv with uv venv --python python3 --system-site-packages from a ROS-sourced shell so it matches the ROS Python ABI, run uv sync --active, then run python -m colcon build --packages-select my_car_web_monitor and test with CAMERA_SOURCE=synthetic ros2 run my_car_web_monitor web_monitor_node.
