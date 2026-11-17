@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-from my_car_motor_bridge.protocol import MotorStatus, SystemStatusV2
+from my_car_mcu_bridge.protocol import MotorStatus, SystemStatusV2
 
 
 @dataclass

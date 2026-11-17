@@ -62,16 +62,56 @@
       #control-error:not(:empty) { grid-column:1/-1; } .keyboard-note { font-size:.75rem; color:var(--muted); }
       @media(max-width:1000px) { .control-panel { grid-template-columns:1fr 2fr; } .driving-actions { grid-column:1/-1; justify-content:space-between; } }
       @media(max-width:680px) { .layout { grid-template-columns:1fr; } .control-panel { grid-template-columns:1fr; } .stream-grid { grid-template-columns:1fr; } header { flex-wrap:wrap; } }
+      /* Wide, shallow telemetry strip. */
+      header.status-bar { align-items:center; gap:8px 14px; padding:6px 0; }
+      #vehicle-summary { flex:1 1 850px; min-width:0; align-items:center; gap:6px 12px; }
+      #vehicle-summary .telemetry-connection-row > .status-badge { padding:2px 6px; border:1px solid currentColor; border-radius:4px; }
+      #vehicle-summary .motor-summary { width:100%; display:flex; align-items:center; flex-wrap:wrap; gap:6px 16px; overflow:visible; }
+      #vehicle-summary .motor-summary-item { display:flex; flex-direction:row; align-items:baseline; flex-wrap:wrap; gap:3px 7px; padding:4px 0; background:transparent; border:0; }
+      #vehicle-summary .motor-summary-item:first-child { flex-basis:175px; }
+      #vehicle-summary .motor-summary-item strong { font-size:1rem; font-variant-numeric:tabular-nums; }
+      #vehicle-summary .motor-summary-item > span { font-size:.72rem; }
+      #vehicle-summary .motor-summary-item > small { display:block; font-size:.65rem; line-height:1.3; }
+      #vehicle-summary .motor-summary-item:first-child > small { flex-basis:100%; }
+      #vehicle-summary .motion-overview { flex:1 1 480px; min-width:0; padding:3px 10px; border-left:1px solid var(--line); background:transparent; }
+      .motion-heading { display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:3px 10px; margin-bottom:2px; font-size:.72rem; }
+      .motion-heading > span { font-size:.62rem; }
+      .motion-table { width:100%; border-collapse:collapse; font-size:.73rem; font-variant-numeric:tabular-nums; }
+      .motion-table th,.motion-table td { padding:3px 6px; text-align:right; white-space:nowrap; }
+      .motion-table thead th { border-bottom:1px solid var(--line); color:var(--muted); font-size:.65rem; font-weight:500; }
+      .motion-table th:first-child { text-align:left; font-weight:500; }
+      .motion-table small { color:var(--muted); font-size:.6rem; font-weight:400; }
+      .motion-table td { font-size:.88rem; font-weight:650; }
+      #vehicle-summary .motion-table .status-badge { display:inline; font-size:.6rem; margin-left:4px; }
+      .motion-table td.motion-mode { font-size:.68rem; font-weight:500; }
+      #vehicle-summary .telemetry-connection-row { display:flex; align-items:center; flex-wrap:wrap; gap:5px 14px; width:100%; }
+      #vehicle-summary .operation-status { display:flex; align-items:center; flex-wrap:wrap; gap:4px 12px; margin:0; padding:0; }
+      #vehicle-summary .operation-status .status-badge { padding:0; border:0; background:transparent; font-size:.7rem; }
+      #motor-dashboard .wheel-card { padding:9px 12px; border:1px solid var(--line); border-top:2px solid var(--line); border-radius:5px; background:var(--panel-2); }
+      #motor-dashboard .wheel-card[data-tone="ok"] { border-top-color:var(--accent); }
+      #motor-dashboard .wheel-card[data-tone="bad"] { border-top-color:var(--danger); }
+      #motor-dashboard .wheel-grid { gap:8px 12px; }
+      #motor-dashboard .wheel-metrics { margin:8px 0; }
+      #motor-dashboard .wheel-metrics dd { font-size:1.15rem; margin-top:3px; }
+      #motor-dashboard .sample-age { margin-top:3px; }
+      @media(max-width:560px) {
+        #vehicle-summary .motor-summary { gap:5px 12px; }
+        #vehicle-summary .motor-summary-item:first-child { flex-basis:100%; }
+        #vehicle-summary .motor-summary-item:first-child > small { flex-basis:auto; }
+        #vehicle-summary .motion-overview { flex-basis:100%; border-left:0; padding:3px 0; overflow-x:auto; }
+        .motion-table th,.motion-table td { padding:3px; }
+        #vehicle-summary .motion-table .status-badge { display:block; margin:0; }
+      }
     </style>
   </head>
   <body>
     <main>
       <header class="status-bar" aria-label="주행 상태">
-        <h1>원격 주행</h1>
+        <h1>차량 피드백 모니터</h1>
         <div id="vehicle-summary" aria-label="차량 요약"></div>
         <div class="row" aria-label="주행 제어 연결">
           <span id="control-state" class="muted" role="status">제어: idle</span>
-          <button id="connect-control" class="primary">제어 연결</button>
+          <button id="connect-control" disabled class="primary">제어 연결</button>
           <button id="disconnect-control">연결 해제</button>
         </div>
         <div id="health" class="muted" role="status">서버 확인 중</div>
@@ -91,7 +131,7 @@
           <p class="view-note">반경 7m · 위쪽 전방(+x) · 오른쪽 +y</p>
         </section>
       </div>
-      <section class="panel control-panel" aria-label="주행 제어">
+      <section hidden class="panel control-panel" aria-label="주행 제어">
         <h2>주행 제어</h2>
         <div class="speed-controls">
           <label class="speed-control" for="linear-speed"><span>직진 속도</span><output id="linear-speed-value" class="speed-value">0.30 m/s</output><input id="linear-speed" type="range" min="0" max="1" step="0.05" value="0.3" /></label>

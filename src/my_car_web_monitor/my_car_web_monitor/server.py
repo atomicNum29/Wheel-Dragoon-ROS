@@ -191,70 +191,7 @@ def create_app(node: Node, settings: Settings) -> FastAPI:
     async def control_ws(websocket: WebSocket) -> None:
         nonlocal active_control_socket
         await websocket.accept()
-
-        if control_bridge is None:
-            await websocket.send_json({"type": "error", "message": "ROS control bridge is not ready"})
-            await websocket.close(code=1011)
-            return
-
-        if active_control_socket is not None:
-            await websocket.send_json(
-                {"type": "error", "message": "Another control session is already active"}
-            )
-            await websocket.close(code=1008)
-            return
-
-        active_control_socket = websocket
-        await websocket.send_json({"type": "status", **control_bridge.status()})
-        loop = asyncio.get_running_loop()
-        last_command_at = loop.time()
-
-        try:
-            while True:
-                try:
-                    message = await asyncio.wait_for(
-                        websocket.receive_json(),
-                        timeout=settings.control_watchdog_timeout,
-                    )
-                except TimeoutError:
-                    now = loop.time()
-                    if now - last_command_at >= settings.control_watchdog_timeout:
-                        await control_bridge.stop()
-                        last_command_at = now
-                    continue
-
-                message_type = message.get("type")
-                if message_type == "command":
-                    status = await control_bridge.send_command(
-                        float(message.get("linear", 0.0)),
-                        float(message.get("angular", 0.0)),
-                    )
-                    last_command_at = loop.time()
-                    await websocket.send_json({"type": "status", **status})
-                elif message_type == "stop":
-                    status = await control_bridge.stop()
-                    last_command_at = loop.time()
-                    await websocket.send_json({"type": "status", **status})
-                elif message_type == "status":
-                    await websocket.send_json({"type": "status", **control_bridge.status()})
-                else:
-                    await websocket.send_json(
-                        {"type": "error", "message": f"Unknown message type '{message_type}'"}
-                    )
-        except WebSocketDisconnect:
-            logger.info("Control websocket disconnected")
-        except Exception as exc:
-            logger.exception("Control websocket error: %s", exc)
-            try:
-                await websocket.send_json({"type": "error", "message": str(exc)})
-            except Exception:
-                pass
-        finally:
-            if active_control_socket is websocket:
-                active_control_socket = None
-            try:
-                await control_bridge.stop()
-            except Exception:
-                logger.warning("Failed to publish stop command on websocket shutdown", exc_info=True)
+        await websocket.send_json({"type": "error", "message": "Feedback-only mode: web control disabled"})
+        await websocket.close(code=1008)
 
     return app

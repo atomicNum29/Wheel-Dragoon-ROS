@@ -2,11 +2,11 @@ import struct
 
 import pytest
 
-from my_car_motor_bridge.protocol import (
+from my_car_mcu_bridge.protocol import (
     CanRequest, CanResponse, MotorCommand, MotorStatus, SystemStatusV2,
     SYSTEM_STATUS_V2_FIXED, WHEEL_TELEMETRY, try_parse_packet, try_parse_status,
 )
-from my_car_motor_bridge.command_converter import convert_cmd_vel
+from my_car_mcu_bridge.command_converter import convert_cmd_vel
 
 # Independent golden fixture from Wheel-Dragoon commit 3327abd README.
 V2 = bytes.fromhex(

@@ -9,11 +9,11 @@ from launch.utilities import perform_substitutions
 def test_yaml_defaults_and_explicit_mode_override(tmp_path, monkeypatch):
     config = tmp_path / 'config'
     config.mkdir()
-    (config / 'motor_bridge.yaml').write_text(
-        'motor_bridge_node:\n  ros__parameters:\n    serial_mode: bridge\n'
+    (config / 'mcu_bridge.yaml').write_text(
+        'mcu_bridge_node:\n  ros__parameters:\n    serial_mode: bridge\n'
         '    legacy_fallback_enabled: false\n    legacy_fallback_timeout_sec: 2.5\n'
     )
-    path = Path(__file__).resolve().parents[1] / 'launch' / 'motor_bridge.launch.py'
+    path = Path(__file__).resolve().parents[1] / 'launch' / 'mcu_bridge.launch.py'
     spec = importlib.util.spec_from_file_location('motor_bridge_launch_test', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

@@ -33,13 +33,13 @@ def generate_launch_description():
         }.items(),
     )
 
-    motor_bridge_launch = os.path.join(
-        get_package_share_directory("my_car_motor_bridge"),
+    mcu_bridge_launch = os.path.join(
+        get_package_share_directory("my_car_mcu_bridge"),
         "launch",
-        "motor_bridge.launch.py",
+        "mcu_bridge.launch.py",
     )
-    motor_bridge = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(motor_bridge_launch)
+    mcu_bridge = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(mcu_bridge_launch)
     )
 
-    return LaunchDescription([rpi_cameras, lidar, t265, motor_bridge])
+    return LaunchDescription([rpi_cameras, lidar, t265, mcu_bridge])

@@ -1,0 +1,3 @@
+builtin_interfaces/Time changed_at
+bool connected
+uint64 connection_id

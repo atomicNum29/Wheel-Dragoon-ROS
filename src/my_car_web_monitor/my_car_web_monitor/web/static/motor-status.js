@@ -8,7 +8,8 @@
     ["출력 비활성", "DISABLED", "neutral"], ["출력 활성", "ENABLED", "ok"],
     ["명령 시간 초과 정지", "TIMEOUT_STOP", "warn"], ["비상 정지", "ESTOP", "bad"],
     ["시스템 고장", "FAULT", "bad"], ["부팅 중", "BOOTING", "neutral"],
-    ["보정 중", "CALIBRATION", "neutral"],
+    ["예약 상태", "RESERVED", "neutral"],
+    ["드라이버 전원 차단", "DRIVER_POWERDOWN", "neutral"],
   ];
   // [wire code, operator label, explanation, presentation severity]
   const SYSTEM_BITS = [
@@ -25,6 +26,9 @@
     ["VOLTAGE_STALE", "드라이버 전압 시간 초과", "CONTROL 시작 후 3 s 대기 기간이 지났고 하나 이상의 전압이 유효하지 않습니다. 현재 조건 동안 보고 횟수를 갱신합니다. 진단 및 전압 validity 보고이며 이 오류만으로 출력을 차단하지 않습니다.", "warn"],
     ["CAN_RX_OVERRUN", "CAN 수신 버퍼 초과", "CAN 수신 mailbox에서 overrun이 감지되었습니다. 즉시 정지를 뜻하지 않는 진단 비트입니다.", "warn"],
   ];
+  SYSTEM_BITS.push(
+    ["USB_TX_DROPPED", "USB 송신 데이터 누락", "큐 초과, 상태 교체, 슬롯 생략 또는 브릿지 응답 폐기 관측입니다.", "warn"],
+    ["USB_WRITE_MISMATCH", "USB 부분 전송 또는 실패", "USB write 반환 길이 불일치입니다. 호스트 저장 여부는 확인하지 않습니다.", "warn"]);
   const LEGACY_BITS = [
     ["CHECKSUM_ERROR", "체크섬 오류", "수신 패킷 체크섬 오류입니다.", "warn"],
     SYSTEM_BITS[1],
@@ -69,11 +73,11 @@
   function viewModel(status, age, serverAvailable = true) {
     let schema = "waiting";
     if (status !== null && status !== undefined) {
-      schema = object(status) && status.version === 2 && "system_error" in status ? "v2"
+      schema = object(status) && status.schema === "split_v1" && "system_error" in status ? "v2"
         : object(status) && !("version" in status) && "error" in status ? "legacy" : "unknown";
     }
     const supported = schema === "v2" || schema === "legacy";
-    const fresh = supported && serverAvailable && Number.isFinite(age) && age >= 0 && age <= STALE_SECONDS;
+    const fresh = supported && status.status_present === true && status.status_age_sec >= 0 && status.status_age_sec + age <= STALE_SECONDS && serverAvailable && Number.isFinite(age) && age >= 0 && age <= STALE_SECONDS;
     const state = supported && integer(status.state, 0, 255) ? STATES[status.state] : null;
     const validity = schema === "v2" && integer(status.validity, 0, 255) ? status.validity : 0;
     const errors = supported ? decodeBits(schema === "v2" ? status.system_error : status.error,
@@ -82,15 +86,15 @@
       schema, fresh, age, serverAvailable, state,
       stateLabel: state ? state[0] : supported ? "알 수 없는 상태" : schema === "unknown" ? "해석 불가" : "수신 대기",
       errors, rawError: supported ? (schema === "v2" ? status.system_error : status.error) : null,
-      seq: supported && integer(status.seq, 0, 255) ? status.seq : "—",
+      seq: supported && integer(status.seq, 0, 65535) ? status.seq : "—",
       wheels: WHEELS.map(([key, label, driver], bit) => {
         const wheel = schema === "v2" && object(status.wheels?.[key]) ? status.wheels[key] : null;
-        const usable = fresh && wheel?.valid === true && Boolean(validity & (1 << bit));
+        const usable = fresh && wheel?.age_sec + age <= STALE_SECONDS && wheel?.valid === true && Boolean(validity & (1 << bit));
         const bits = wheel ? decodeBits(wheel.status, MOTOR_BITS, 8) : null;
         const valid = usable && bits !== null && integer(wheel.rpm, -32768, 32767)
           && integer(wheel.encoder_count, -2147483648, 2147483647)
           && integer(wheel.rx_timestamp_us, 0, 0xFFFFFFFF)
-          && integer(status.snapshot_timestamp_us, 0, 0xFFFFFFFF);
+          ;
         return { key, label, driver, wheel, bits, valid,
           tone: valid ? (wheel.status ? "bad" : "ok") : "neutral",
           labelText: schema === "legacy" ? "구형 메시지 · 정보 없음" : !wheel ? "데이터 없음"
@@ -103,7 +107,7 @@
       }),
       drivers: ["a", "b"].map((key, index) => {
         const driver = schema === "v2" ? status.drivers?.[key] : null;
-        const valid = fresh && driver?.valid === true && Boolean(validity & (1 << (index + 4)))
+        const valid = fresh && driver?.age_sec + age <= 3.0 && driver?.valid === true && Boolean(validity & (1 << (index + 4)))
           && integer(driver.voltage_mv, 0, 65535);
         return { key, valid, voltage: valid ? `${number(driver.voltage_mv / 1000, 2)}V` : "—",
           label: schema === "legacy" ? "개별 전압 미지원" : valid ? "유효" : "현재 전압 확인 불가" };
@@ -127,11 +131,18 @@
 
       <div class="motor-summary">
         <div class="motor-summary-item"><strong data-role="mcu">수신 대기</strong><small data-role="mcu-detail"></small></div>
-        <div class="motor-summary-item"><span class="muted">A:</span><strong data-role="voltage-a">—</strong><small data-role="voltage-a-valid"></small></div>
-        <div class="motor-summary-item"><span class="muted">B:</span><strong data-role="voltage-b">—</strong><small data-role="voltage-b-valid"></small></div>
+        <div class="motor-summary-item"><span class="muted">드라이버 A 전압</span><strong data-role="voltage-a">—</strong><small data-role="voltage-a-valid"></small></div>
+        <div class="motor-summary-item"><span class="muted">드라이버 B 전압</span><strong data-role="voltage-b">—</strong><small data-role="voltage-b-valid"></small></div>
+        <section class="motion-overview" aria-label="목표값과 적용 지령 비교">
+          <div class="motion-heading"><strong>목표 / 적용 지령</strong><span class="muted">적용값은 실측값이 아닙니다</span></div>
+          <table class="motion-table"><thead><tr><th scope="col">지령</th><th scope="col">운동 모드</th><th scope="col">선속도 <small>m/s</small></th><th scope="col">중앙 조향각 <small>rad</small></th><th scope="col">PIVOT <small>rad/s</small></th></tr></thead>
+          <tbody><tr><th scope="row">목표 <span data-role="requested-valid" class="status-badge"></span></th><td data-role="requested-mode" class="motion-mode">—</td><td data-role="requested-v">—</td><td data-role="requested-theta">—</td><td data-role="requested-w">—</td></tr>
+          <tr><th scope="row">적용 <span data-role="applied-valid" class="status-badge"></span></th><td data-role="applied-mode" class="motion-mode">—</td><td data-role="applied-v">—</td><td data-role="applied-theta">—</td><td data-role="applied-w">—</td></tr></tbody></table>
+        </section>
+        <div class="operation-status" aria-label="운전 상태"><span data-role="rc-mode" class="status-badge"></span><span data-role="motion-stage" class="status-badge"></span><span data-role="drive-gate" class="status-badge"></span><span data-role="steering-valid" class="status-badge"></span></div>
       </div>
       <p class="driving-alert" data-role="driving-alert" role="status"></p>
-      <details class="vehicle-details"><summary>차량 상세 · 모터 / 오류 / 통신</summary>
+      <details class="vehicle-details" open><summary>차량 상세 · 모터 / 오류 / 통신</summary>
       <p class="motor-notice" data-role="notice"></p>
       <div class="motor-columns"><div><div class="vehicle-front">↑ 차량 앞쪽</div><div class="wheel-grid" data-role="wheels"></div></div>
         <section class="system-diagnostics" aria-label="시스템 오류"><div class="panel-head"><h3>시스템 오류 / 진단</h3><span data-role="error-count" class="status-badge"></span></div>
@@ -143,7 +154,11 @@
     const refs = Object.fromEntries([...root.querySelectorAll("[data-role]")].map(node => [node.dataset.role, node]));
     // Reuse the same live telemetry nodes in the compact top status bar.
     const summary = document.getElementById("vehicle-summary");
-    if (summary) summary.append(refs.connection, root.querySelector(".motor-summary"));
+    if (summary) {
+      const connectionRow = element("div", "telemetry-connection-row");
+      connectionRow.append(refs.connection, root.querySelector(".operation-status"));
+      summary.append(connectionRow, root.querySelector(".motor-summary"));
+    }
     const warnings = document.getElementById("driving-warnings");
     if (warnings) warnings.append(refs["driving-alert"]);
     const cards = new Map();
@@ -152,7 +167,7 @@
       card.dataset.wheel = key;
       card.setAttribute("aria-label", `${key.toUpperCase()} ${label} 모터`);
       card.innerHTML = `<div class="wheel-head"><h3>${key.toUpperCase()} <span>${label}</span></h3><span class="status-badge" data-field="state"></span></div>
-        <p class="muted motor-subtitle">Driver ${driver}</p>
+        <p class="muted motor-subtitle">Driver ${driver}</p><small class="sample-age" data-field="sample">샘플 수신 대기</small>
         <dl class="wheel-metrics"><div><dt>회전속도 <span>rpm</span></dt><dd data-field="rpm">—</dd></div>
           <div><dt>누적 엔코더 <span>count</span></dt><dd data-field="count">—</dd></div>
           <div><dt>엔코더 추정 회전수 <span>회전</span></dt><dd data-field="revolutions">—</dd></div>
@@ -182,13 +197,45 @@
         : !view.fresh ? "최근 상태 메시지가 없습니다. 마지막 상태와 오류를 표시하며 측정값은 숨깁니다."
         : view.schema === "legacy" ? "구형 상태 메시지입니다. 개별 모터 정보와 드라이버별 전압은 제공되지 않습니다."
         : "측정값은 MCU validity와 메시지 수신 시각이 모두 유효할 때 표시됩니다. 회전수·거리는 엔코더 원점 기준이며 16,384 count/회전, 바퀴 지름 130 mm로 계산합니다. 거리는 부호 있는 이론값입니다.";
-      refs["mcu-detail"].textContent = `${view.state?.[1] || "—"} · ${view.schema === "v2" ? "System Status v2" : view.schema === "legacy" ? "Legacy" : "—"} · seq ${view.seq}${serverCount === null ? "" : ` · ROS 수신 #${serverCount}`} · ${Number.isFinite(age) ? `${age.toFixed(1)} s 전 수신` : "수신 시각 없음"}`;
+      refs["mcu-detail"].textContent = `${view.state?.[1] || "—"} · ${view.schema === "v2" ? "Split telemetry v1" : view.schema === "legacy" ? "Legacy" : "—"} · seq ${view.seq}${serverCount === null ? "" : ` · ROS 수신 #${serverCount}`} · ${Number.isFinite(age) ? `${age.toFixed(1)} s 전 수신` : "수신 시각 없음"}`;
+      const live = view.fresh && latest?.schema === "split_v1";
+      const modes = ["STOP", "MANUAL", "AUTO", "POWERDOWN", "PIVOT"];
+      const stages = ["초기화", "주행 단계", "감속 중", "조향 중", "안정 대기", "비상 정지"];
+      const flags = live ? latest.flags : 0;
+      for (const [prefix, validBit, pivot] of [
+        ["requested", 16, Boolean(flags & 4096)],
+        ["applied", 2048, latest?.applied_mode === 4],
+      ]) {
+        const valid = live && Boolean(flags & validBit);
+        refs[`${prefix}-valid`].textContent = !live ? "수신 대기 / 지연" : valid ? "유효" : "무효";
+        tone(refs[`${prefix}-valid`], valid ? "ok" : "neutral");
+        for (const key of ["v", "theta", "w"]) {
+          const applicable = pivot ? key === "w" : key !== "w";
+          const value = latest?.[`${prefix}_${key}_milli`];
+          refs[`${prefix}-${key}`].textContent = valid && applicable && integer(value, -32768, 32767) ? number(value / 1000, 3) : "—";
+          refs[`${prefix}-${key}`].title = !valid ? "유효한 지령이 없습니다" : !applicable ? "현재 운동 모드에서 사용하지 않는 항목" : "";
+        }
+        refs[`${prefix}-mode`].textContent = valid ? pivot ? "PIVOT" : "일반 v · θ" : "—";
+      }
+      const indicators = [
+        ["rc-mode", `RC · ${live ? modes[latest.mode] || "알 수 없음" : "—"}`, "neutral"],
+        ["motion-stage", `모션 · ${live ? stages[latest.transition] || "알 수 없음" : "—"}`, live && latest.transition === 5 ? "bad" : "neutral"],
+        ["drive-gate", !live ? "구동 · 확인 불가" : flags & 512 ? "구동 허용" : "구동 차단", live ? flags & 512 ? "ok" : "warn" : "neutral"],
+        ["steering-valid", !live ? "조향 보정 · —" : flags & 1024 ? "조향 보정 유효" : "조향 보정 무효", live && !(flags & 1024) ? "warn" : "neutral"],
+      ];
+      for (const [key, label, level] of indicators) {
+        refs[key].textContent = label;
+        tone(refs[key], level);
+      }
+      if (latest?.schema === "split_v1") {
+        refs["mcu-detail"].textContent = `상태 seq ${latest.seq} · 세션 ${latest.session} · ${live ? "최신 상태" : "현재 상태 확인 불가"}`;
+        refs.notice.textContent += " 목표와 적용 지령은 각각 유효 플래그를 확인합니다. —는 0이 아니라 무효 또는 해당 모드에서 미사용을 뜻합니다. 구동 허용은 실제 이동이나 CAN 적용 확인이 아닙니다.";
+      }
       if (view.schema === "legacy") {
         const voltage = view.fresh && integer(latest.battery_mv, 1, 65535) ? `${number(latest.battery_mv / 1000, 2)} V` : "확인 불가";
         refs.notice.textContent += ` 대표 배터리 전압: ${voltage}.`;
       }
       if (dropped) refs.notice.textContent += ` 웹 전송 대기열에서 ${dropped}개 상태가 누락되었습니다.`;
-      if (revision === previousRevision && view.fresh === previousFresh && serverAvailable === previousAvailable) return;
       previousRevision = revision;
       previousFresh = view.fresh;
       previousAvailable = serverAvailable;
@@ -196,7 +243,9 @@
       tone(refs.mcu, view.fresh ? (view.state?.[2] || "warn") : "neutral");
       for (const driver of view.drivers) {
         refs[`voltage-${driver.key}`].textContent = driver.voltage;
-        refs[`voltage-${driver.key}-valid`].textContent = driver.label;
+        const sample = latest?.drivers?.[driver.key];
+        const sampleAge = sample?.present && Number.isFinite(age) ? sample.age_sec + age : null;
+        refs[`voltage-${driver.key}-valid`].textContent = `${driver.label}${Number.isFinite(sampleAge) ? ` · ${number(sampleAge, 1)} s 전` : ""}`;
         tone(refs[`voltage-${driver.key}`], driver.valid ? "ok" : "neutral");
       }
       const activeSystem = view.errors?.filter(bit => bit.active) || [];
@@ -215,7 +264,7 @@
         const active = view.errors?.filter(bit => bit.active) || [];
         refs["error-count"].textContent = view.errors ? `${view.fresh ? "" : "마지막 "}${active.length}개 비트` : "확인 불가";
         tone(refs["error-count"], !view.fresh || !view.errors ? "neutral" : active.length ? "warn" : "ok");
-        refs["error-context"].textContent = "오류 감지마다 잔여 보고를 10회로 갱신하고 정상 0x82 송신 후 1회씩 차감합니다. 재감지가 없으면 11번째부터 해제됩니다. 미송신·BRIDGE에서는 차감하지 않으며 발생 횟수나 고정 시간이 아닙니다. 출력 차단은 오류 종류와 현재 입력에 따라 다릅니다. 최종 MCU 상태를 확인하세요.";
+        refs["error-context"].textContent = "오류 비트는 발생 횟수가 아닙니다. 일반 오류는 감지 시 10회 보고로 갱신되며 0x87 전체 송신 완료와 세션·오류 변경 조건에 따라 차감합니다. USB 오류 bit12/13은 별도 유지·해제 규칙을 사용합니다. 최종 MCU 상태와 구동 허용을 함께 확인하세요.";
         refs.errors.replaceChildren();
         for (const bit of active) {
           const item = element("li", "error-item");
@@ -240,6 +289,8 @@
       for (const wheel of view.wheels) {
         const card = cards.get(wheel.key);
         tone(card.card, wheel.tone);
+        const sampleAge = wheel.wheel?.present && Number.isFinite(age) ? wheel.wheel.age_sec + age : null;
+        card.card.querySelector("[data-field=sample]").textContent = Number.isFinite(sampleAge) ? `수신 ${number(sampleAge, 2)} s 전 · seq ${wheel.wheel.seq}` : "샘플 수신 대기";
         card.state.textContent = wheel.labelText;
         tone(card.state, wheel.tone);
         for (const field of ["rpm", "count", "revolutions", "distance"]) text(card[field], wheel[field]);

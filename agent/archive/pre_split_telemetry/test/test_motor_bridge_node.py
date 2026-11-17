@@ -11,7 +11,7 @@ from rclpy.node import Node
 from rclpy.parameter import Parameter
 from std_msgs.msg import String
 
-import my_car_motor_bridge.motor_bridge_node as bridge_module
+import my_car_mcu_bridge.mcu_bridge_node as bridge_module
 from test_protocol import LEGACY, V2, frame
 import struct
 
@@ -253,10 +253,10 @@ def test_actual_ros_topic_roundtrip(nodes, mode):
     executor.add_node(node)
     executor.add_node(peer)
     output = []
-    topic = '/motor_bridge_node/status' if mode == 'control' else '/motor_bridge_node/can_rx'
+    topic = '/mcu_bridge_node/status' if mode == 'control' else '/mcu_bridge_node/can_rx'
     subscription = peer.create_subscription(String, topic, lambda msg: output.append(json.loads(msg.data)), 100)
     publisher = peer.create_publisher(Twist if mode == 'control' else String,
-                                     '/cmd_vel' if mode == 'control' else '/motor_bridge_node/can_tx', 10)
+                                     '/cmd_vel' if mode == 'control' else '/mcu_bridge_node/can_tx', 10)
     try:
         spin_until(executor, lambda: publisher.get_subscription_count() > 0
                    and peer.count_publishers(topic) > 0)

@@ -1,0 +1,19 @@
+uint8 version
+# Host connection generation; not an MCU boot identifier.
+uint64 connection_id
+builtin_interfaces/Time received_at
+uint16 seq
+uint8 state
+uint8 mode
+uint8 transition
+uint16 flags
+uint16 system_error
+uint8 validity
+int16 requested_v_milli
+int16 requested_theta_milli
+int16 requested_w_milli
+int16 applied_v_milli
+int16 applied_theta_milli
+int16 applied_w_milli
+uint8 applied_mode
+uint8 session

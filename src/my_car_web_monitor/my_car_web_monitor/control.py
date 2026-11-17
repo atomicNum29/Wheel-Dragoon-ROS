@@ -4,42 +4,35 @@ import asyncio
 import time
 from typing import Any
 
-from geometry_msgs.msg import Twist
 from rclpy.node import Node
-from std_msgs.msg import String
+import json
+from my_car_interfaces.msg import RobotTelemetry
+from rosidl_runtime_py.convert import message_to_ordereddict
 
 from my_car_web_monitor.config import Settings
 from my_car_web_monitor.status_stream import StatusStream
 
 
 class RosControlBridge:
-    """Publishes browser teleoperation commands to ROS and mirrors motor status."""
+    """Typed feedback subscription and browser JSON conversion; no driving output."""
 
     def __init__(self, node: Node, settings: Settings) -> None:
         self._node = node
         self._settings = settings
-        self._publisher = node.create_publisher(Twist, settings.cmd_vel_topic, 10)
+        self._publisher = None  # Feedback-only scope: no command publisher.
         self._lock = asyncio.Lock()
         self._last_command = {"linear": 0.0, "angular": 0.0, "age_sec": None}
         self._last_command_time: float | None = None
         self.status_stream = StatusStream()
         self._status_sub = node.create_subscription(
-            String,
+            RobotTelemetry,
             settings.motor_status_topic,
             self._on_motor_status,
             10,
         )
 
     async def send_command(self, linear: float, angular: float) -> dict[str, Any]:
-        linear = self._clamp(linear, self._settings.control_linear_speed)
-        angular = self._clamp(angular, self._settings.control_angular_speed)
-
-        async with self._lock:
-            self._publish_twist(linear, angular)
-            now = time.monotonic()
-            self._last_command_time = now
-            self._last_command = {"linear": linear, "angular": angular, "age_sec": 0.0}
-            return self.status()
+        raise RuntimeError("Web driving control is disabled in feedback-only mode")
 
     async def stop(self) -> dict[str, Any]:
         return await self.send_command(0.0, 0.0)
@@ -57,14 +50,25 @@ class RosControlBridge:
             **self.status_stream.latest_payload(),
         }
 
-    def _publish_twist(self, linear: float, angular: float) -> None:
-        message = Twist()
-        message.linear.x = float(linear)
-        message.angular.z = float(angular)
-        self._publisher.publish(message)
-
-    def _on_motor_status(self, message: String) -> None:
-        self.status_stream.publish(message.data)
+    def _on_motor_status(self, message: RobotTelemetry) -> None:
+        value = message_to_ordereddict(message)
+        status = value["status"]
+        # Web JSON is produced only at this browser boundary.
+        status.update(version=1, schema="split_v1", status_present=value["status_present"],
+                      status_age_sec=value["status_age_sec"])
+        status["wheels"] = {
+            name: {**value["wheels"][idx], "present": value["wheel_present"][idx],
+                   "age_sec": value["wheel_age_sec"][idx],
+                   "valid": value["wheel_present"][idx] and 0 <= value["wheel_age_sec"][idx] <= 1.0
+                            and bool(status["validity"] & (1 << idx))}
+            for idx, name in enumerate(("lf", "rf", "lr", "rr"))}
+        status["drivers"] = {
+            name: {**value["drivers"][idx], "present": value["driver_present"][idx],
+                   "age_sec": value["driver_age_sec"][idx],
+                   "valid": value["driver_present"][idx] and 0 <= value["driver_age_sec"][idx] <= 3.0
+                            and bool(status["validity"] & (1 << (idx + 4)))}
+            for idx, name in enumerate(("a", "b"))}
+        self.status_stream.publish(json.dumps(status))
 
     @staticmethod
     def _clamp(value: float, limit: float) -> float:

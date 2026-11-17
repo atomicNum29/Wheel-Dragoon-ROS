@@ -4,7 +4,7 @@ import os
 from setuptools import find_packages, setup
 
 
-package_name = "my_car_motor_bridge"
+package_name = "my_car_mcu_bridge"
 
 setup(
     name=package_name,
@@ -29,12 +29,13 @@ setup(
     zip_safe=True,
     maintainer="Bak siu",
     maintainer_email="atomicw63.546@gmail.com",
-    description="ROS2 motor bridge that converts /cmd_vel to milli-unit MCU serial packets.",
+    description="Receive-only Wheel-Dragoon feedback bridge and telemetry collection.",
     license="Apache-2.0",
     extras_require={"test": ["pytest"]},
     entry_points={
         "console_scripts": [
-            "motor_bridge_node = my_car_motor_bridge.motor_bridge_node:main",
+            "mcu_bridge_node = my_car_mcu_bridge.mcu_bridge_node:main",
+            "telemetry_aggregator = my_car_mcu_bridge.telemetry_aggregator:main",
         ],
     },
 )

@@ -1,5 +1,5 @@
-from my_car_motor_bridge.protocol import MotorStatus, try_parse_packet
-from my_car_motor_bridge.status_policy import StatusPolicy
+from my_car_mcu_bridge.protocol import MotorStatus, try_parse_packet
+from my_car_mcu_bridge.status_policy import StatusPolicy
 from test_protocol import V2
 
 LEGACY = MotorStatus(0, 0, 0, 0)

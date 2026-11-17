@@ -3,7 +3,7 @@ from unittest.mock import Mock
 import pytest
 from serial import SerialException, SerialTimeoutException
 
-from my_car_motor_bridge.serial_transport import SerialTransport
+from my_car_mcu_bridge.serial_transport import SerialTransport
 
 
 @pytest.mark.parametrize('outcome', [2, SerialTimeoutException('timeout'), SerialException('gone')])
