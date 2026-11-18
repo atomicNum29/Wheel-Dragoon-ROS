@@ -1,8 +1,8 @@
 # my_car_mcu_bridge
 
-현재 코드는 Wheel-Dragoon의 split telemetry v1을 수신하는 ROS 2 브리지와 별도 집계 노드를 제공한다. 패키지 이름은 `my_car_mcu_bridge`, 수신 실행 파일/노드 이름은 `mcu_bridge_node`다.
+현재 코드는 Wheel-Dragoon의 split telemetry v1 수신·0x03 v1 명령 송신 브리지와 별도 집계 노드를 제공한다. 패키지 이름은 `my_car_mcu_bridge`, 송수신 실행 파일/노드 이름은 `mcu_bridge_node`다.
 
-수신 전용이며 `/cmd_vel` 구독, MCU 제어·정지·리셋·모드 전환·CAN 진단 요청을 전송하지 않는다. MCU가 지원하는 `0x03` 제어는 이 ROS 구현 범위에 포함되지 않는다. 구형 `0x81/0x82`와 legacy fallback은 지원하지 않는다.
+피드백을 수신하고 `/mcu_bridge_node/command`의 `MotionCommand`를 `0x03 v1`으로 인코딩·송신한다. `/cmd_vel` 변환, 보호 리셋, CAN 진단 요청은 구현하지 않는다. 구형 `0x81/0x82`와 legacy fallback은 지원하지 않는다.
 
 ## 실행과 설정
 
@@ -23,6 +23,8 @@ launch는 `mcu_bridge_node`와 `telemetry_aggregator`를 함께 실행한다. �
 | port | /dev/ttyACM0 | 시리얼 장치 |
 | baudrate | 115200 | pyserial 연결 설정, 양수 |
 | read_rate_hz | 100.0 | 읽기 타이머 Hz, 유한한 양수 |
+| send_rate_hz | 50.0 | 최신 명령 송신 타이머 Hz, 유한한 양수 |
+| command_timeout_sec | 0.3 | ROS 명령·상태 만료, 0 초과 0.5 미만 |
 
 설정은 노드 재시작 시 적용한다. launch 인자는 별도로 선언하지 않는다. 포트를 일회성으로 바꾸려면 launch 대신 아래 두 노드를 각 터미널에서 실행한다.
 
@@ -73,7 +75,34 @@ ros2 run my_car_mcu_bridge telemetry_aggregator
 
 LinkState는 연결 상태가 바뀔 때만 발행한다. 시작 직후 계속 연결에 실패하면 초기 false 메시지를 별도 발행하지 않는다. 정상 종료는 포트를 닫으며 마지막 false 메시지를 별도 발행하지 않는다. 포트 open 상태는 MCU 응답 정상이나 물리적 안전 상태의 증명이 아니다.
 
-브리지는 CONTROL 전환을 요청하지 않는다. MCU가 BRIDGE/RESETTING이면 일반 피드백을 생성하지 않으므로 이 노드를 시작해도 자동 복귀하지 않는다. CONTROL에서는 RC 수동 주행 중에도 피드백 수집이 가능하다.
+별도 모드 전환 요청 인터페이스는 없다. 0x03 자체는 MCU를 CONTROL로 복귀시키는 효과가 있지만, 브리지는 최근 0x87이 없으면 명령을 송신하지 않는다. 따라서 MCU가 이미 BRIDGE/RESETTING이고 피드백이 없는 상태에서 이 노드를 시작해도 자동 복귀하지 않는다. 진단 세션과 일반 제어 송신은 동시에 사용하지 않는다. CONTROL에서는 RC 수동 주행 중에도 피드백 수집이 가능하다.
+
+## 제어 명령 0x03 v1
+
+기본 구독 토픽은 `/mcu_bridge_node/command`, 타입은 `my_car_interfaces/msg/MotionCommand`, reliable / volatile depth 1이다. 단일 명령 발행 주체를 사용한다. 여러 ROS publisher 사이의 우선권 조정은 구현하지 않는다.
+
+ROS 입력은 SI 단위 선속도·중앙 조향각·PIVOT 각속도다. 각 필드를 1000배하고 반올림하여 아래 패킷으로 인코딩한다.
+
+| offset | 타입 | 값 |
+| --- | --- | --- |
+| 0–3 | 4 bytes | AA 55 0B 03 |
+| 4 | u8 | version=1 |
+| 5 | u16 | 송신마다 증가하는 seq, 65535→0 |
+| 7 | u8 | bit0 enable / bit1 estop / bit2 PIVOT, 예약 0 |
+| 8 | i16 | 선속도 milli-m/s, ±2000 |
+| 10 | i16 | 중앙 조향각 milli-rad, ±845 |
+| 12 | i16 | PIVOT 각속도 milli-rad/s, ±5000 |
+| 14 | u8 | 앞선 14 bytes XOR |
+
+일반 모드에서는 ω=0, PIVOT에서는 v=θ=0이어야 한다. NaN/Infinity·범위 초과·미사용 필드 비영을 거부한다. 조향 상한은 현재 MCU 기하에 맞춘 값이다.
+
+ROS stamp는 생성 시각이며 브리지와 같은 ROS 시간 기준을 사용해야 한다. 수신과 송신 모두 stamp age가 0..command_timeout_sec인지 확인한다. connection_id/session은 현재 피드백 경계와 일치해야 한다. stamp·connection_id·session은 host 검증용이며 wire에는 포함하지 않는다.
+
+포트 연결 후 0.55초 대기하고, 최신 0x87이 있는 CONTROL 상태에서 0·disable 명령을 받는다. enable=true 명령은 추가로 RC AUTO이며 POWERDOWN/드라이버 시작 대기가 아닐 때만 허용한다. disable 명령의 motion 필드는 모두 0이어야 한다. 이 대기는 RC 모드 전환마다 재시작하지 않는다. 호스트 재시작으로 초기화된 seq에 대해 MCU의 이전 명령 timeout을 기다리기 위한 것이다. seq는 포트 재연결만으로 초기화하지 않는다. MCU ACK/수락 seq echo는 없다.
+
+최신 목표 하나만 유지하고 같은 목표도 새 seq로 송신한다. 명령 만료 시 enable=0을 한 번 시도하고 캐시를 비운다. 활성 estop은 만료 시 disable에도 유지한다. 포트 단절·RC 모드 또는 CONTROL session 변경·상태 만료에서는 목표를 폐기하며 재연결 후 재생하지 않는다. 상태가 없어 송신을 멈춘 경우 MCU 자체 500ms timeout이 남은 정지 경로다.
+
+정상 0속도(enable=1)는 MCU 모션 스케줄러 감속, enable=0은 TQ-OFF 경로다. estop=1은 AUTO에서 즉시 TQ-OFF 시도와 비상 조향 자세 요청이다. MANUAL/PIVOT은 RC 권한이며 host estop이 전역 정지가 아니다. 정상 종료는 아직 유효한 활성 명령과 CONTROL 피드백이 있는 경우 enable=0을 시도하고 포트를 닫는다. 시리얼 write 성공은 차량 정지 확인이 아니다.
 
 ## 최신값 집계
 

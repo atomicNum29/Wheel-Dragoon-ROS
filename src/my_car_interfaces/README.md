@@ -1,6 +1,6 @@
 # my_car_interfaces
 
-MCU 피드백과 최신값 집계용 ROS 2 전용 메시지 패키지다. `ament_cmake`와 `rosidl_default_generators`로 생성하며 `builtin_interfaces`에 의존한다. JSON 문자열 또는 USB byte 배열이 아닌 ROS typed message다.
+MCU 제어 명령·피드백과 최신값 집계용 ROS 2 전용 메시지 패키지다. `ament_cmake`와 `rosidl_default_generators`로 생성하며 `builtin_interfaces`에 의존한다. JSON 문자열 또는 USB byte 배열이 아닌 ROS typed message다.
 
 메시지 정의는 [msg/](msg/)에 있다. 아래 필드 순서·타입은 현재 `.msg` 정의와 같다. ROS 타입의 bytes와 MCU wire packet 크기는 서로 다르다.
 
@@ -12,6 +12,24 @@ MCU 피드백과 최신값 집계용 ROS 2 전용 메시지 패키지다. `ament
 - seq: 휠별/드라이버별/상태별 독립 u16 생성 순번. 65535 다음 0이다.
 - rx_timestamp_us: MCU CAN ISR의 uint32 micros 시각이다. uint32 순환을 그대로 보존한다.
 - ROS Time: int32 sec + uint32 nanosec. MCU 시각과의 동기화는 제공하지 않는다.
+
+## MotionCommand
+
+기본 토픽 `/mcu_bridge_node/command`로 웹 서버가 20Hz 발행하고 브리지가 최신값을 50Hz로 송신한다. 일반 주행/PIVOT을 직접 표현하며 Twist 변환은 수행하지 않는다.
+
+| 타입 | 필드 | 의미 |
+| --- | --- | --- |
+| builtin_interfaces/Time | stamp | host ROS 명령 생성 시각, MCU ACK 아님 |
+| uint64 | connection_id | 현재 LinkState/피드백에서 관측한 host 연결 세대 |
+| uint8 | session | 현재 MCU CONTROL 세션 |
+| bool | enable | 구동 허용 요청 |
+| bool | estop | AUTO 비상정지·비상 조향 요청 |
+| bool | pivot | false=일반 v·θ, true=PIVOT ω |
+| float64 | linear_velocity | m/s, ±2 |
+| float64 | steering_angle | 가상 중앙각 rad, ±0.845 |
+| float64 | angular_velocity | PIVOT rad/s, ±5 |
+
+일반 모드는 angular_velocity=0, PIVOT은 linear_velocity=steering_angle=0이다. 생성 시각과 경계 필드는 브리지에서 오래된 명령을 거부하기 위한 host 정보이며 MCU wire에는 없다. 상세 검증·timeout은 [브리지 송신 규칙](../my_car_mcu_bridge/README.md#제어-명령-0x03-v1)을 따른다.
 
 ## WheelFeedback
 

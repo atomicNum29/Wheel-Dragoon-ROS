@@ -1,6 +1,6 @@
 # my_car_web_monitor
 
-`web_monitor_node`는 ROS 피드백·LiDAR·영상 소스를 브라우저에 제공한다. 현재 주행 제어는 비활성이다. `RosControlBridge`라는 내부 클래스명과 `/control/*` 경로는 남아 있지만 `/cmd_vel` publisher를 만들지 않는다.
+`web_monitor_node`는 피드백·LiDAR·영상 조회와 RC AUTO에서의 웹 수동 제어를 제공한다. `/cmd_vel` 대신 전용 `MotionCommand`로 v·θ/PIVOT 목표를 발행한다.
 
 ## 구성과 실행
 
@@ -34,11 +34,12 @@ CAMERA_SOURCE=synthetic ros2 run my_car_web_monitor web_monitor_node
 
 | 방향 | 기본 토픽 | 타입 / 동작 |
 | --- | --- | --- |
+| 발행 | `/mcu_bridge_node/command` | `my_car_interfaces/msg/MotionCommand`, reliable / volatile depth 1, 제어 세션 중 20Hz |
 | 구독 | `/telemetry` | `my_car_interfaces/msg/RobotTelemetry`, reliable / volatile depth 10 |
 | 구독 | `/scan` | `sensor_msgs/msg/LaserScan`, best-effort / volatile depth 1 |
 | 구독 | `CAMERA_STREAMS`의 ROS 이미지 토픽 | Image 또는 CompressedImage, 시청 중 구독 |
 
-웹 노드는 시리얼 포트를 열지 않는다. `/telemetry`는 별도 `telemetry_aggregator`가 20Hz로 발행하며, 메시지 정의·집계 규칙은 [인터페이스](../my_car_interfaces/README.md)와 [브리지](../my_car_mcu_bridge/README.md)를 따른다. 제어·오도메트리·실측 조향 JointState는 발행하지 않는다.
+웹 노드는 시리얼 포트를 열지 않는다. `/telemetry`는 별도 `telemetry_aggregator`가 20Hz로 발행하며, 메시지 정의·집계 규칙은 [인터페이스](../my_car_interfaces/README.md)와 [브리지](../my_car_mcu_bridge/README.md)를 따른다. 오도메트리·실측 조향 JointState는 발행하지 않는다.
 
 ## 상태 변환과 freshness
 
@@ -58,6 +59,8 @@ CAMERA_SOURCE=synthetic ros2 run my_car_web_monitor web_monitor_node
 `/ws/status`는 관찰자별 256개 큐를 사용한다. 큐가 차면 오래된 항목을 제거하며 `stream_dropped_count`로 표시한다. `motor_status_received_count`는 웹 프로세스의 ROS 집계 메시지 수이지 MCU 패킷 수가 아니다. 서버는 새 상태가 없으면 1초마다 heartbeat를 보내고, 브라우저는 이를 새 측정으로 처리하지 않는다. 브라우저는 연결 종료 후 재접속하며, 누락된 과거 기록은 재생하지 않는다.
 
 ## UI
+
+상단 제어 연결 버튼 옆에는 미연결/연결 중/연결됨·대기/연결됨·제어/연결됨·정지 확인/비상정지만 표시하고 상세 사유는 제어 영역에 표시한다. 조이스틱은 제어 영역 우측에 배치하며 일반 모드는 280px 높이, PIVOT은 96px 높이다. 좁은 화면에서는 아래로 배치한다.
 
 상단에는 상태 수신 여부와 RC 모드·모션 단계·구동 허용·조향 보정 상태를 한 줄로 표시한다. 전압 A/B와 목표·적용 지령을 가로로 배치한다. 목표/적용은 각각 선속도 m/s, 중앙 조향각 rad, PIVOT 각속도 rad/s를 표시한다.
 
@@ -82,7 +85,7 @@ CAMERA_SOURCE=synthetic ros2 run my_car_web_monitor web_monitor_node
 | `WEBRTC_PACKET_MAX` | `1100` | WebRTC 인코더 RTP payload 크기 설정 |
 | `LOG_LEVEL` | `info` | 로그 수준 |
 
-제어 관련 설정은 코드에 남아 있지만 현재 제어 전송에는 사용하지 않는다. `CMD_VEL_TOPIC=/cmd_vel`, `CONTROL_LINEAR_SPEED=2.0`, `CONTROL_ANGULAR_SPEED=3.0`, 각 축 MIN=0.0, DEFAULT=0.2/0.3, `CONTROL_WATCHDOG_TIMEOUT=0.3`이 기본값이다. 속도 설정은 여전히 시작 시 유한한 `0 ≤ min ≤ default ≤ max` 검사를 수행한다.
+현재 제어에는 `MCU_COMMAND_TOPIC=/mcu_bridge_node/command`, `CONTROL_RAMP_SECONDS=1.0`, `CONTROL_WATCHDOG_TIMEOUT=0.3`을 사용한다. 마우스 복귀 시간은 `CONTROL_MOUSE_RETURN_SECONDS=2.0`이다. 두 시간은 유한한 양수, watchdog은 0 초과 0.5 미만이어야 한다. 이전 Twist UI의 속도 설정은 코드에 남아 있지만 새 조작부에는 사용하지 않는다. `CMD_VEL_TOPIC=/cmd_vel`, `CONTROL_LINEAR_SPEED=2.0`, `CONTROL_ANGULAR_SPEED=3.0`, 각 축 MIN=0.0, DEFAULT=0.2/0.3, `CONTROL_WATCHDOG_TIMEOUT=0.3`이 기본값이다. 속도 설정은 여전히 시작 시 유한한 `0 ≤ min ≤ default ≤ max` 검사를 수행한다.
 
 ## HTTP / WebSocket
 
@@ -93,11 +96,11 @@ CAMERA_SOURCE=synthetic ros2 run my_car_web_monitor web_monitor_node
 | `GET /time` | 서버 monotonic 시각, 영상 지연 추정용 |
 | `GET /streams` | 영상 소스 목록 |
 | `POST /offer` | stream_id/sdp/type로 WebRTC 협상 |
-| `GET /control/config` | 남아 있는 속도 설정 조회 |
+| `GET /control/config` | MCU 최대값과 입력 ramp 시간 조회 |
 | `GET /control/status` | 최신 웹 상태 JSON 조회 |
 | `/ws/status` | 읽기 전용 상태 스트림 |
 | `/ws/scan` | 읽기 전용 LiDAR 바이너리 스트림 |
-| `/ws/control` | 비활성 오류 JSON 전송 후 코드 1008로 종료 |
+| `/ws/control` | 단일 제어 세션, 입력/heartbeat 수신과 목표 상태 응답 |
 
 ## 카메라 소스
 
@@ -127,7 +130,41 @@ ROS 영상은 mono8/8UC1/rgb8/bgr8/rgba8/bgra8와 JPEG/PNG 압축을 지원한�
 
 최신 프로토콜·UI에 대한 빌드·테스트·실물 검증은 이번 문서 정리에서 수행하지 않았다. `test/`에는 이전 JSON·제어·UI 전제의 테스트가 남아 있으므로 현행 규격 통과 근거가 아니다.
 
-현재 shutdown handler는 `control_bridge.stop()`을 호출하지만 해당 메서드는 수신 전용 모드의 RuntimeError를 발생시킨다. 따라서 종료 정리에서 예외가 발생하고 뒤의 영상 정리가 건너뛰어질 수 있다. 이는 코드상 남아 있는 제약이며 이 문서 작업에서는 코드를 변경하지 않았다.
+종료 시 활성 웹 출력이 있으면 enable=0을 발행하고 영상 소스를 정리한다. 제어 연결을 열지 않은 조회 전용 실행에서는 명령을 발행하지 않는다.
+
+## 웹 조작
+
+제어 연결은 RC 모드·MCU 피드백 유무와 무관하게 열 수 있으며, 연결 자체와 실제 구동 권한을 분리한다. 세션은 자동 재접속하지 않지만 일반 RC 모드 변경으로 끊지는 않는다. 피드백이 없거나 AUTO가 아니거나 드라이버 시작 대기/POWERDOWN이면 0·disable을 20Hz 발행한다. 최신 피드백에서 AUTO를 확인하면 현재 유효한 웹 입력과 enable을 발행한다. 비상정지는 이 조건보다 우선한다.
+
+대기 중에도 웹 입력 상태는 갱신되며 단순 MANUAL↔AUTO 전환에서는 현재 입력을 유지한다. AUTO 이전에 MCU로 보냈던 패킷을 재사용하는 것이 아니라 진입 이후 새 패킷을 계속 송신한다. 초기 포트 연결의 0.55초 대기, 송수신 주기, MCU의 AUTO 진입 버퍼 폐기 및 모션 스케줄 때문에 물리적 무지연을 보장하지는 않는다. AUTO 전환마다 0.55초 대기를 다시 시작하지 않는다.
+
+- 일반 키보드: W/S 선속도는 최대값까지 1초, 놓으면 같은 변화율로 0에 복귀한다. A/D는 새 키 누름마다 좌/우 한 단계로 조향을 바꾼다. 좌5…중앙0…우5의 11단계이며 각도는 단계 × 최대각/5이다. MCU 부호 기준 좌가 양수다. 키 자동 반복은 무시하고, 키를 놓아도 단계는 유지한다.
+- PIVOT 키보드: A/D 각속도는 누르는 동안 증가하고 놓으면 같은 변화율로 복귀한다. 최대값 기준 1초이며 W/S는 사용하지 않는다.
+- 마우스/터치: 일반 모드의 가로=조향·세로=선속도, PIVOT의 가로=각속도다. 위치를 즉시 목표로 사용하며 놓으면 최대값 기준 2초의 변화율로 복귀한다. 중심 데드밴드는 5%다.
+- 입력 우선권: 먼저 시작한 키보드/마우스가 우선한다. 일반 키보드의 조향 단계가 0이 아니면 속도가 0이고 키를 놓았어도 키보드 소유권을 유지한다. 무시된 키/드래그는 새로 시작해야 한다. W+A 같은 키 조합은 가능하다.
+- P 및 UI 모드 버튼: 누른 키나 드래그가 있으면 무시한다. 키를 놓은 뒤에는 목표가 아직 0으로 복귀 중이거나 조향 단계가 남아 있어도 전환을 요청할 수 있다. 입력을 전부 0으로 초기화하고 기존 모드의 0 목표를 보낸 뒤 아래 확인 절차를 기다린다. 완료 후 새 모드에서 새 입력이 필요하며, 일반 복귀의 조향 단계는 0이다.
+
+- 초기 최대값: 2m/s, 0.845rad, 5rad/s. 숫자 입력칸에서 편집 후 `최대값 적용` 또는 Enter로 반영하며 변경은 중립에서만 가능하다. 입력 중인 값은 20Hz 서버 응답으로 덮어쓰지 않는다. 연결 전에도 값을 저장할 수 있고 같은 페이지에서 연결하면 반영한다. 새 페이지 로드 시에는 기본값으로 시작한다. 웹 입력 ramp는 MCU의 실제 가감속·조향 제한과 별개다.
+
+### 모드 전환의 정지 확인
+
+정지 요청 전 관측한 MCU 상태의 연결·세션과 새 seq 관측 횟수(host revision)를 기준으로, 다음 조건을 모두 만족하는 이후 피드백을 기다린다.
+
+1. 최신 RC AUTO 피드백이며 시작 대기/POWERDOWN이 아님.
+2. 같은 연결·세션에서 새로운 MCU seq의 상태가 관측됨. 집계가 동일 샘플을 반복 발행하는 것은 새 확인으로 세지 않음.
+3. 목표 유효 bit4 및 적용 지령 유효 bit11이 1.
+4. 기존 요청 운동 모드(bit12)와 기존 적용 모드가 일치하고 요청 v/θ/ω가 모두 0.
+5. 적용 선속도와 PIVOT 각속도가 0.
+
+이후 일반/PIVOT을 바꾸고 입력을 다시 초기화한다. 확인 전에는 기존 모드의 0 목표를 유지하며 시간 경과만으로 전환하지 않는다. AUTO 외 모드에서는 0·disable로 대기하고, AUTO가 되면 기존 모드의 정상 정지 목표(enable=1)부터 보낸다. 전환 대기 중 새 주행 입력·추가 P 요청은 무시한다.
+
+이는 MCU 생성 지령 기반 확인이며 실제 휠 정지 또는 개별 명령 ACK가 아니다. 0x87에는 명령 수락 seq echo가 없으므로 특정 요청과의 엄밀한 일대일 대응은 보장하지 않는다. STEERING/SETTLING 등 적용 지령 무효 상태의 0은 정지 확인에 사용하지 않는다.
+
+서버 `teleop.py`가 입력 중재와 ramp를 수행한다. `/ws/control`은 정규화 축 x/y와 source/active, 일반 키보드의 steer_delta(-1/0/+1), mode/limits 요청, 정상 stop, estop/clear_estop, heartbeat를 받는다. 입력 이벤트는 증가하는 event_id와 최근 서버 응답 token을 포함한다. token이 watchdog보다 오래되면 세션을 닫아 지연된 요청의 재생을 줄인다. 응답 control_state는 owner, pivot, neutral, 웹 입력, 실제 outgoing, enabled, authority, limits, steering_step, switching/pending_pivot, input_epoch, estop, token, 마지막 처리 event_id를 담는다. 입력·모드 요청은 최신 input_epoch도 포함하며 모드 전환·캐시 초기화 이전의 요청은 폐기한다.
+
+브라우저 heartbeat와 목표 송신은 20Hz다. 0.3초 브라우저 입력 만료·WebSocket 단절·서버 송신 지연 시 세션을 닫고 enable=0을 요청한다. RC 모드 변경·MCU 피드백 만료만으로 웹 세션을 닫지는 않는다. 피드백 만료나 연결/CONTROL 세션 경계 변경에서는 입력·조향 단계를 초기화하고 0·disable로 대기한다. 진행 중인 모드 전환은 새 피드백으로 정지 확인을 다시 시작한다. 단순 RC 모드 변경은 기존 웹 입력을 유지한다. 브리지의 명령 만료는 별도 0.3초이며 MCU는 수락 명령 기준 500ms timeout을 사용한다. 탭 숨김/창 포커스 이탈도 연결을 닫는다. 다시 연결하고 새 입력을 해야 하며 이전 목표를 재생하지 않는다. 이들은 물리적 정지 확인이 아니다.
+
+`중립 복귀`는 조향 단계 0과 속도 정상 ramp, `구동 해제`는 세션 종료/enable=0이다. `비상정지`는 AUTO의 TQ-OFF와 비상 조향 자세를 요청하며 일반 정지와 다르다. host estop은 세션 재연결이나 timeout으로 자동 해제하지 않고 별도 해제 버튼을 사용한다. RC MANUAL/PIVOT을 강제로 정지시키는 기능은 아니다.
 
 ## Capture-to-display latency estimate
 

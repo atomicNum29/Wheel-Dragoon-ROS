@@ -2,15 +2,15 @@
 
 이 워크스페이스는 차체 모델·센서 bringup, MCU 피드백 수집, 브라우저 영상·차량 상태 조회를 제공한다. 문서는 현재 소스 구현을 설명하며, 실행·빌드 성공을 보증하는 검증 보고서가 아니다.
 
-MCU 브리지는 수신 전용이다. `/cmd_vel` 구독, `0x03` 제어 송신, 웹 주행 제어, 휠 오도메트리 발행은 구현하지 않는다. MCU 자체의 AUTO 제어 지원과 이 ROS 구현의 범위는 다르다.
+MCU 브리지는 피드백 수신과 `MotionCommand`의 `0x03 v1` 송신을 지원한다. 웹은 RC AUTO에서 키보드·가상 조이스틱으로 일반 v·θ 또는 PIVOT ω를 요청한다. `/cmd_vel` 변환과 휠 오도메트리 발행은 구현하지 않는다.
 
 ## 구성
 
 | 패키지 | 역할 | 빌드 방식 |
 | --- | --- | --- |
 | [`my_car_package`](src/my_car_package) | 차체 URDF/Xacro·메시, TF, RViz, 센서·모터 통합 bringup 및 bag/SLAM 실험 launch | `ament_cmake` |
-| [`my_car_mcu_bridge`](src/my_car_mcu_bridge/README.md) | `0x85/86/87` 피드백 수신 및 20Hz 집계 | `ament_python` |
-| [`my_car_web_monitor`](src/my_car_web_monitor/README.md) | FastAPI 웹 UI, WebRTC 영상, LiDAR·차량 상태 조회 | `ament_python` |
+| [`my_car_mcu_bridge`](src/my_car_mcu_bridge/README.md) | `0x85/86/87` 피드백 수신, 0x03 명령 송신 및 20Hz 집계 | `ament_python` |
+| [`my_car_web_monitor`](src/my_car_web_monitor/README.md) | FastAPI 웹 UI, WebRTC 영상, LiDAR·차량 상태 조회와 수동 제어 | `ament_python` |
 | [`my_car_interfaces`](src/my_car_interfaces/README.md) | 피드백·상태·집계 전용 ROS 메시지 | `ament_cmake` / rosidl |
 
 ```text
@@ -62,7 +62,9 @@ flowchart LR
     Aggregate -->|/telemetry · RobotTelemetry · 20Hz| Web[web_monitor_node]
     Camera[Picamera2 / 합성 / ROS 이미지] --> Web
     Lidar[LaserScan /scan] --> Web
-    Web -->|HTTP / WebSocket / WebRTC| Browser[브라우저]
+    Web <-->|HTTP / WebSocket / WebRTC| Browser[브라우저]
+    Web -->|MotionCommand 20Hz| Bridge
+    Bridge -->|0x03 v1 50Hz| MCU
 ```
 
 브리지는 검증·디코딩한 패킷마다 즉시 발행한다. 집계 노드는 각 스트림의 최신값과 수신 여부·경과시간을 묶는다. 네 휠과 전압은 비동기 데이터이며 집계 메시지는 동시 측정 스냅샷이 아니다. ROS 내부에서는 전용 메시지를 사용하고 웹 경계에서 JSON으로 변환한다.
@@ -193,7 +195,7 @@ ros2 run my_car_mcu_bridge telemetry_aggregator
 ros2 topic echo /telemetry
 ```
 
-시리얼 포트는 브리지 하나가 소유한다. 브리지는 정상 종료 시에도 제어·정지 패킷을 보내지 않는다. MCU가 BRIDGE 모드이면 이 ROS 노드가 CONTROL로 복귀시키지 않으며, 일반 피드백을 받으려면 MCU가 CONTROL이어야 한다. 구형 프로토콜 fallback과 CAN 진단 요청 인터페이스는 없다.
+시리얼 포트는 브리지 하나가 소유한다. 브리지는 활성 명령이 있고 최신 CONTROL 피드백이 유효하면 정상 종료 시 enable=0을 한 번 시도한다. 단절 중 포트를 다시 열어 정지 명령을 보내지는 않는다. MCU가 BRIDGE 모드이면 이 ROS 노드가 CONTROL로 복귀시키지 않으며, 일반 피드백을 받으려면 MCU가 CONTROL이어야 한다. 구형 프로토콜 fallback과 CAN 진단 요청 인터페이스는 없다.
 
 ### Raspberry Pi 카메라
 
@@ -294,7 +296,7 @@ T265의 `mono8`을 비롯해 `8UC1`, `rgb8`, `bgr8`, `rgba8`, `bgra8`과 JPEG/PN
 
 환경변수로 설정한다. 기본 주소는 `http://<장비 IP>:8443`이며 TLS 설정은 없다. `MOTOR_STATUS_TOPIC`의 기본값은 `/telemetry`, 타입은 `my_car_interfaces/msg/RobotTelemetry`다. 카메라·WebRTC·HTTP/WS 설정과 UI 정보는 [웹 문서](src/my_car_web_monitor/README.md)를 참고한다.
 
-`/ws/status`는 읽기 전용이다. `/ws/control`은 비활성 오류를 보내고 종료하며, `/control/config`의 남아 있는 설정은 현재 주행 제어 기능을 뜻하지 않는다.
+`/ws/status`는 읽기 전용이다. `/ws/control`은 RC 모드와 무관하게 연결을 유지하는 단일 제어 세션이다. AUTO 외에는 0·disable을 발행하고 최신 MCU 피드백에서 AUTO를 확인하면 현재 입력·enable을 발행한다. 일반 모드 A/D는 조향 11단계를 선택하며 키 해제 후 유지한다. P와 UI 버튼은 키·드래그가 없을 때 입력 초기화 → 기존 모드 정지 지령 → 갱신된 적용 속도 0 확인 → 모드 전환 순서로 동작한다. 상세 조작·입력 만료 규칙은 웹 문서를 따른다.
 
 ## rosbag 및 SLAM 실험
 

@@ -4,10 +4,10 @@
 
 현재 구조는 다음과 같다.
 
-- `my_car_interfaces`: WheelFeedback, VoltageFeedback, McuStatus, LinkState, RobotTelemetry 정의.
-- `my_car_mcu_bridge/mcu_bridge_node`: 최신 0x85/86/87 v1 수신 후 개별 typed topic 즉시 발행. 제어 송신 없음.
+- `my_car_interfaces`: WheelFeedback, VoltageFeedback, McuStatus, LinkState, RobotTelemetry 및 MotionCommand 정의.
+- `my_car_mcu_bridge/mcu_bridge_node`: 최신 0x85/86/87 v1 수신 후 개별 typed topic 즉시 발행. MotionCommand를 0x03 v1으로 송신.
 - `telemetry_aggregator`: latest-value 집계 `/telemetry` 20Hz 발행.
-- `my_car_web_monitor`: `/telemetry` 구독 후 웹 경계에서 JSON 변환. 웹 제어 비활성.
+- `my_car_web_monitor`: `/telemetry` 구독 후 웹 경계에서 JSON 변환. RC AUTO에서 키보드·가상 조이스틱 제어.
 
 [브리지 구현·설정](../../src/my_car_mcu_bridge/README.md) · [메시지 정의](../../src/my_car_interfaces/README.md) · [웹 동작·설정](../../src/my_car_web_monitor/README.md)
 
