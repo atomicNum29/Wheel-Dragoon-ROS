@@ -102,6 +102,29 @@
         .motion-table th,.motion-table td { padding:3px; }
         #vehicle-summary .motion-table .status-badge { display:block; margin:0; }
       }
+      .teleop-panel { margin-top:10px; border-top:1px solid var(--line); padding:8px 0; }
+      .teleop-heading,.teleop-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; font-size:.76rem; margin-bottom:6px; }
+      .teleop-layout { display:grid; grid-template-columns:minmax(240px,1fr) minmax(140px,180px) minmax(320px,440px); gap:16px; align-items:center; }
+      #joystick { position:relative; width:100%; min-width:0; height:280px; border:1px solid var(--line); border-radius:6px; background:linear-gradient(transparent calc(50% - 1px),var(--line) 50%,transparent calc(50% + 1px)),linear-gradient(90deg,transparent calc(50% - 1px),var(--line) 50%,transparent calc(50% + 1px)); touch-action:none; user-select:none; cursor:crosshair; }
+      #joystick[data-pivot="true"] { height:96px; }
+      #joystick-knob { position:absolute; width:20px; height:20px; border-radius:50%; background:var(--accent); left:50%; top:50%; transform:translate(-50%,-50%); pointer-events:none; }
+      .joystick-label { position:absolute; top:3px; left:5px; font-size:.65rem; color:var(--muted); pointer-events:none; }
+      .teleop-settings { min-width:0; flex:1 1 320px; font-size:.75rem; display:grid; gap:6px; }
+      .teleop-settings label { display:grid; grid-template-columns:minmax(0,130px) minmax(65px,180px) 45px; gap:8px; align-items:center; }
+      .teleop-settings input { width:100%; min-width:0; padding:6px 8px; border:1px solid var(--line); border-radius:4px; background:white; color:var(--text); font:inherit; font-variant-numeric:tabular-nums; }
+      .teleop-settings input:invalid { border-color:var(--danger); }
+      .limit-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+      @media(max-width:900px) {
+        .teleop-layout { grid-template-columns:minmax(220px,1fr) minmax(260px,1fr); }
+        .teleop-settings,.teleop-actions { grid-column:1; }
+        #joystick { grid-column:2; grid-row:1/3; }
+      }
+      @media(max-width:560px) {
+        .teleop-layout { grid-template-columns:minmax(0,1fr); }
+        #joystick { grid-column:1; grid-row:auto; height:240px; }
+      }
+      .teleop-actions { flex:0 1 180px; }
+      button:disabled { opacity:.5; cursor:default; }
     </style>
   </head>
   <body>
@@ -110,8 +133,8 @@
         <h1>차량 피드백 모니터</h1>
         <div id="vehicle-summary" aria-label="차량 요약"></div>
         <div class="row" aria-label="주행 제어 연결">
-          <span id="control-state" class="muted" role="status">제어: idle</span>
-          <button id="connect-control" disabled class="primary">제어 연결</button>
+          <span id="control-state" class="muted" role="status">미연결</span>
+          <button id="connect-control" class="primary">제어 연결</button>
           <button id="disconnect-control">연결 해제</button>
         </div>
         <div id="health" class="muted" role="status">서버 확인 중</div>
@@ -131,18 +154,26 @@
           <p class="view-note">반경 7m · 위쪽 전방(+x) · 오른쪽 +y</p>
         </section>
       </div>
-      <section hidden class="panel control-panel" aria-label="주행 제어">
-        <h2>주행 제어</h2>
-        <div class="speed-controls">
-          <label class="speed-control" for="linear-speed"><span>직진 속도</span><output id="linear-speed-value" class="speed-value">0.30 m/s</output><input id="linear-speed" type="range" min="0" max="1" step="0.05" value="0.3" /></label>
-          <label class="speed-control" for="angular-speed"><span>회전 속도</span><output id="angular-speed-value" class="speed-value">1.00 rad/s</output><input id="angular-speed" type="range" min="0" max="3" step="0.1" value="1" /></label>
+      <section class="panel teleop-panel" aria-label="웹 주행 제어">
+        <div class="teleop-heading"><h2>웹 주행 제어</h2><button id="toggle-pivot">일반 주행 · P로 전환</button><span id="input-owner" class="muted">입력 대기</span><span class="muted" id="ramp-info">AUTO에서 입력 적용 · 속도 증가/복귀 1초 · 마우스 복귀 2초</span></div>
+        <div class="teleop-layout">
+          <div class="teleop-settings">
+            <label for="limit-linear"><span>최대 선속도</span><input id="limit-linear" type="number" inputmode="decimal" min="0.001" max="2" step="0.001" value="2"><span>m/s</span></label>
+            <label for="limit-steering"><span>최대 중앙 조향각</span><input id="limit-steering" type="number" inputmode="decimal" min="0.001" max="0.845" step="0.001" value="0.845"><span>rad</span></label>
+            <label for="limit-angular"><span>최대 PIVOT 각속도</span><input id="limit-angular" type="number" inputmode="decimal" min="0.001" max="5" step="0.001" value="5"><span>rad/s</span></label>
+            <div class="limit-actions"><button id="apply-limits">최대값 적용</button><span id="limits-status" class="muted" role="status">현재 최대값</span></div>
+            <p class="keyboard-note">W/S 선속도 · A/D 조향 1단계씩 · P 정지 후 모드 전환</p>
+            <p class="keyboard-note">PIVOT: A/D 연속 각속도 · 조향 단계는 키를 놓아도 유지됩니다. P는 누른 키·드래그가 없을 때 사용합니다.</p>
+            <p id="steering-step" class="keyboard-note">조향 단계: 중앙 0 / 5</p>
+            <p id="local-command" class="status-list">웹 목표: —</p>
+          </div>
+          <div class="teleop-actions"><button id="normal-stop">중립 복귀</button><button id="disable-control">구동 해제</button><button id="emergency-stop" class="danger">비상정지 · 비상 조향</button><button id="clear-estop">비상정지 해제</button></div>
+          <div id="joystick" role="group" tabindex="0" aria-label="일반 주행 조이스틱: 위 전진, 아래 후진, 왼쪽 좌조향, 오른쪽 우조향">
+            <span class="joystick-label">↑ 전진 · 좌우 조향 · ↓ 후진</span><span id="joystick-knob"></span>
+          </div>
         </div>
-        <div class="driving-actions"><div><div class="teleop-grid">
-          <span></span><button data-command="forward" aria-label="전진 (W)">W</button><span></span>
-          <button data-command="left" aria-label="좌회전 (A)">A</button><button data-command="backward" aria-label="후진 (S)">S</button><button data-command="right" aria-label="우회전 (D)">D</button>
-        </div><span class="keyboard-note">WASD / 방향키</span></div><button id="stop-control" class="danger">정지</button></div>
-        <div id="control-error" class="bad" role="status"></div>
-        <details class="control-details"><summary>제어 통신 상세</summary><div class="status-list"><div id="cmd-status">cmd: linear=0.00 angular=0.00</div><div id="topic-status">topic: loading</div></div></details>
+        <p id="control-error" class="bad" role="status"></p>
+        <p class="keyboard-note">AUTO 외에는 연결을 유지하고 0·disable을 전송합니다. 연결 해제·탭 이탈·입력 만료 시 구동을 해제합니다. 비상정지는 AUTO에서 TQ-OFF와 비상 조향 자세를 요청합니다.</p>
       </section>
       <section id="motor-dashboard" class="panel motor-dashboard" lang="ko" aria-label="차량 및 모터 상태"></section>
     </main>
@@ -170,25 +201,9 @@
       const health = document.getElementById("health");
       const startAllButton = document.getElementById("start-all");
       const stopAllButton = document.getElementById("stop-all");
-      const connectControlButton = document.getElementById("connect-control");
-      const disconnectControlButton = document.getElementById("disconnect-control");
-      const stopControlButton = document.getElementById("stop-control");
-      const linearSpeedInput = document.getElementById("linear-speed");
-      const angularSpeedInput = document.getElementById("angular-speed");
-      const linearSpeedValue = document.getElementById("linear-speed-value");
-      const angularSpeedValue = document.getElementById("angular-speed-value");
-      const controlState = document.getElementById("control-state");
-      const cmdStatus = document.getElementById("cmd-status");
-      const topicStatus = document.getElementById("topic-status");
       const stopStatusMonitor = MotorStatusUI.start(document.getElementById("motor-dashboard"));
-      const controlError = document.getElementById("control-error");
 
       const streamCards = new Map();
-      const activeKeys = new Set();
-      const teleopState = { linearSpeed: 0.3, angularSpeed: 1.0 };
-      let controlSocket = null;
-      let controlTimer = null;
-
       function setText(element, prefix, value, bad = false) {
         const labels = {
           idle:"대기", new:"대기", checking:"확인 중", connecting:"연결 중",
@@ -200,86 +215,6 @@
         else element.textContent = `${prefix}: ${value}`;
         element.classList.toggle("bad", bad);
         element.classList.toggle("ok", !bad && value !== "idle" && value !== "waiting");
-      }
-
-      function controlVector() {
-        let linear = 0;
-        let angular = 0;
-        if (activeKeys.has("forward")) linear += teleopState.linearSpeed;
-        if (activeKeys.has("backward")) linear -= teleopState.linearSpeed;
-        if (activeKeys.has("left")) angular += teleopState.angularSpeed;
-        if (activeKeys.has("right")) angular -= teleopState.angularSpeed;
-        return { linear, angular };
-      }
-
-      function sendControlMessage(message) {
-        if (!controlSocket || controlSocket.readyState !== WebSocket.OPEN) return;
-        controlSocket.send(JSON.stringify(message));
-      }
-
-      function sendCurrentCommand() {
-        const { linear, angular } = controlVector();
-        cmdStatus.textContent = `cmd: linear=${linear.toFixed(2)} angular=${angular.toFixed(2)}`;
-        sendControlMessage({ type: "command", linear, angular });
-      }
-
-      function startControlLoop() {
-        stopControlLoop();
-        controlTimer = window.setInterval(sendCurrentCommand, 100);
-      }
-
-      function stopControlLoop() {
-        if (controlTimer) {
-          window.clearInterval(controlTimer);
-          controlTimer = null;
-        }
-      }
-
-      async function connectControl() {
-        if (controlSocket) return;
-        controlError.textContent = "";
-        const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-        controlSocket = new WebSocket(`${protocol}://${window.location.host}/ws/control`);
-        controlSocket.addEventListener("open", () => {
-          setText(controlState, "control", "connected");
-          startControlLoop();
-          sendControlMessage({ type: "status" });
-        });
-        controlSocket.addEventListener("message", (event) => {
-          const payload = JSON.parse(event.data);
-          if (payload.type === "error") {
-            controlError.textContent = payload.message;
-            return;
-          }
-          if (payload.type === "status") {
-            topicStatus.textContent = `topic: ${payload.cmd_vel_topic}`;
-          }
-        });
-        controlSocket.addEventListener("close", () => {
-          activeKeys.clear();
-          stopControlLoop();
-          controlSocket = null;
-          setText(controlState, "control", "idle");
-          cmdStatus.textContent = "cmd: linear=0.00 angular=0.00";
-        });
-        controlSocket.addEventListener("error", () => {
-          setText(controlState, "control", "error", true);
-        });
-      }
-
-      function disconnectControl() {
-        activeKeys.clear();
-        stopControlLoop();
-        sendControlMessage({ type: "stop" });
-        if (controlSocket) controlSocket.close();
-        controlSocket = null;
-        cmdStatus.textContent = "cmd: linear=0.00 angular=0.00";
-      }
-
-      function setCommandActive(command, active) {
-        if (active) activeKeys.add(command);
-        else activeKeys.delete(command);
-        sendCurrentCommand();
       }
 
       function createStreamCard(stream) {
@@ -321,27 +256,6 @@
         streamGrid.innerHTML = "";
         streamCards.clear();
         for (const stream of payload.streams || []) createStreamCard(stream);
-      }
-
-      async function loadControlConfig() {
-        const response = await fetch("/control/config");
-        if (!response.ok) throw new Error(`control config failed: ${response.status}`);
-        const payload = await response.json();
-        linearSpeedInput.max = payload.linear_speed;
-        linearSpeedInput.min = payload.linear_speed_min;
-        linearSpeedInput.value = payload.linear_speed_default;
-        angularSpeedInput.max = payload.angular_speed;
-        angularSpeedInput.min = payload.angular_speed_min;
-        angularSpeedInput.value = payload.angular_speed_default;
-        updateSpeedSettings();
-      }
-
-      function updateSpeedSettings() {
-        teleopState.linearSpeed = Number(linearSpeedInput.value);
-        teleopState.angularSpeed = Number(angularSpeedInput.value);
-        linearSpeedValue.textContent = `${teleopState.linearSpeed.toFixed(2)} m/s`;
-        angularSpeedValue.textContent = `${teleopState.angularSpeed.toFixed(2)} rad/s`;
-        if (activeKeys.size) sendCurrentCommand();
       }
 
       async function startStream(card) {
@@ -452,61 +366,14 @@
         for (const card of streamCards.values()) await stopStream(card);
       }
 
-      const keyBindings = new Map([
-        ["w", "forward"],
-        ["arrowup", "forward"],
-        ["s", "backward"],
-        ["arrowdown", "backward"],
-        ["a", "left"],
-        ["arrowleft", "left"],
-        ["d", "right"],
-        ["arrowright", "right"],
-      ]);
-
-      document.querySelectorAll("[data-command]").forEach((button) => {
-        const command = button.dataset.command;
-        button.addEventListener("pointerdown", () => setCommandActive(command, true));
-        button.addEventListener("pointerup", () => setCommandActive(command, false));
-        button.addEventListener("pointerleave", () => setCommandActive(command, false));
-        button.addEventListener("pointercancel", () => setCommandActive(command, false));
-      });
-
-      window.addEventListener("keydown", (event) => {
-        const command = keyBindings.get(event.key.toLowerCase());
-        if (!command) return;
-        event.preventDefault();
-        setCommandActive(command, true);
-      });
-      window.addEventListener("keyup", (event) => {
-        const command = keyBindings.get(event.key.toLowerCase());
-        if (!command) return;
-        event.preventDefault();
-        setCommandActive(command, false);
-      });
-      window.addEventListener("blur", () => {
-        activeKeys.clear();
-        sendControlMessage({ type: "stop" });
-        cmdStatus.textContent = "cmd: linear=0.00 angular=0.00";
-      });
       window.addEventListener("beforeunload", () => {
         stopStatusMonitor();
         stopAllStreams();
-        disconnectControl();
       });
-
       startAllButton.addEventListener("click", startAllStreams);
       stopAllButton.addEventListener("click", stopAllStreams);
-      connectControlButton.addEventListener("click", connectControl);
-      disconnectControlButton.addEventListener("click", disconnectControl);
-      linearSpeedInput.addEventListener("input", updateSpeedSettings);
-      angularSpeedInput.addEventListener("input", updateSpeedSettings);
-      stopControlButton.addEventListener("click", () => {
-        activeKeys.clear();
-        sendControlMessage({ type: "stop" });
-        cmdStatus.textContent = "cmd: linear=0.00 angular=0.00";
-      });
 
-      Promise.all([fetch("/health"), loadStreams(), loadControlConfig()])
+      Promise.all([fetch("/health"), loadStreams()])
         .then(() => {
           health.textContent = "서버 연결됨";
           health.classList.add("ok");
@@ -516,5 +383,6 @@
           streamError.textContent = error.message;
         });
     </script>
+    <script src="/static/teleop.js"></script>
   </body>
 </html>

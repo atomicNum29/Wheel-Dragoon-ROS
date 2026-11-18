@@ -3,3 +3,5 @@ mcu_bridge_node:
     port: "/dev/ttyACM0"
     baudrate: 115200
     read_rate_hz: 100.0
+    send_rate_hz: 50.0
+    command_timeout_sec: 0.3

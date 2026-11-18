@@ -15,6 +15,7 @@ from my_car_web_monitor.config import Settings
 from my_car_web_monitor.lidar import LidarStream
 from my_car_web_monitor.control import RosControlBridge
 from my_car_web_monitor.streams import StreamRegistry
+from my_car_web_monitor.teleop import TeleopState
 
 logger = logging.getLogger(__name__)
 
@@ -89,14 +90,9 @@ def create_app(node: Node, settings: Settings) -> FastAPI:
 
     @app.get("/control/config")
     async def control_config() -> dict[str, float]:
-        return {
-            "linear_speed": settings.control_linear_speed,
-            "angular_speed": settings.control_angular_speed,
-            "linear_speed_min": settings.control_linear_speed_min,
-            "linear_speed_default": settings.control_linear_speed_default,
-            "angular_speed_min": settings.control_angular_speed_min,
-            "angular_speed_default": settings.control_angular_speed_default,
-        }
+        return {"linear_speed": 2.0, "steering_angle": 0.845, "angular_speed": 5.0,
+                "ramp_seconds": settings.control_ramp_seconds,
+                "mouse_return_seconds": settings.control_mouse_return_seconds}
 
     @app.get("/control/status")
     async def control_status() -> dict:
@@ -191,7 +187,164 @@ def create_app(node: Node, settings: Settings) -> FastAPI:
     async def control_ws(websocket: WebSocket) -> None:
         nonlocal active_control_socket
         await websocket.accept()
-        await websocket.send_json({"type": "error", "message": "Feedback-only mode: web control disabled"})
-        await websocket.close(code=1008)
+        if control_bridge is None or active_control_socket is not None:
+            await websocket.send_json({"type": "error", "message": "다른 제어 세션이 사용 중이거나 ROS가 준비되지 않았습니다"})
+            await websocket.close(code=1008)
+            return
+        active_control_socket = websocket
+        state = TeleopState(settings.control_ramp_seconds, settings.control_mouse_return_seconds)
+        last_input = time.monotonic()
+        feedback = {"message": "연결됨 · 새 입력을 시작하세요"}
+        issued_tokens = {}
+        token_seq = 0
+        last_event = 0
+        stop_marker = None
+        previous_feedback = control_bridge.feedback()
+
+        async def receive_inputs():
+            nonlocal last_input, last_event
+            while True:
+                payload = await websocket.receive_json()
+                if not isinstance(payload, dict):
+                    raise ValueError("JSON object required")
+                token = payload.get("token")
+                if type(token) is not int or time.monotonic() - issued_tokens.get(token, -1e9) > settings.control_watchdog_timeout:
+                    raise ValueError("오래된 제어 요청 · 다시 연결하세요")
+                kind = payload.get("type")
+                # Only fresh client heartbeats keep this controller alive.
+                if kind == "heartbeat":
+                    last_input = time.monotonic()
+                    continue
+                try:
+                    event_id = payload.get("event_id")
+                    if type(event_id) is not int or event_id <= last_event:
+                        raise ValueError("잘못된 입력 순번")
+                    if kind in ("input", "mode") and payload.get("input_epoch") != state.input_epoch:
+                        feedback["message"] = "이전 입력은 폐기되었습니다 · 새로 조작하세요"
+                    elif kind == "input":
+                        accepted = state.input(payload.get("source"), payload.get("active"),
+                            payload.get("x"), payload.get("y"), payload.get("steer_delta", 0))
+                        feedback["message"] = "" if accepted else "현재 입력 방식 또는 정지 확인이 우선합니다"
+                    elif kind == "mode":
+                        if state.request_mode(payload.get("pivot")):
+                            feedback["message"] = "정지 지령 확인 대기"
+                        else:
+                            feedback["message"] = "눌린 키·드래그 또는 진행 중인 전환이 우선합니다"
+                    elif kind == "limits":
+                        if not state.neutral:
+                            feedback["message"] = "중립에서만 최대값을 변경할 수 있습니다"
+                        else:
+                            try:
+                                state.set_limits([payload.get("linear"), payload.get("steering"), payload.get("angular")])
+                                feedback["message"] = "최대값 적용됨"
+                            except ValueError as error:
+                                feedback["message"] = str(error)
+                    elif kind == "stop":
+                        # Normal stop uses the same return ramp and keeps ownership.
+                        state.return_to_neutral()
+                    elif kind == "estop":
+                        control_bridge.estop = True
+                        state.reset()
+                    elif kind == "clear_estop":
+                        if not state.neutral:
+                            raise ValueError("중립에서 비상정지를 해제하세요")
+                        control_bridge.estop = False
+                        state.reset()
+                    else:
+                        raise ValueError("지원하지 않는 제어 요청")
+                    last_event = event_id
+                    last_input = time.monotonic()
+                except (ValueError, TypeError) as error:
+                    feedback["message"] = str(error)
+                    # Invalid input ends the session instead of refreshing old motion.
+                    raise ValueError(str(error)) from error
+
+        async def transmit_targets():
+            nonlocal token_seq, stop_marker, previous_feedback
+            previous = time.monotonic()
+            while True:
+                now = time.monotonic()
+                if now - last_input > settings.control_watchdog_timeout:
+                    raise ValueError("입력 수신 만료 · 다시 연결하세요")
+                current = control_bridge.feedback()
+                # RC authority changes do not disconnect the web session. Real
+                # telemetry loss or host/MCU session boundaries discard old input.
+                if ((previous_feedback["fresh"] and not current["fresh"])
+                        or current["identity"] != previous_feedback["identity"]):
+                    state.suspend()
+                    stop_marker = None
+                previous_feedback = current
+                if control_bridge.estop:
+                    if state.owner is not None or state.switching or any(state.values):
+                        state.reset()
+                    stop_marker = None
+                elif state.switching:
+                    if not current["auto"]:
+                        stop_marker = None
+                    elif stop_marker is None:
+                        # Record a baseline before publishing the OLD-mode stop.
+                        stop_marker = (current["identity"], current["revision"])
+                    elif (current["identity"] == stop_marker[0]
+                          and current["revision"] > stop_marker[1]
+                          and current["flags"] & 2048  # applied command valid
+                          and current["flags"] & 16  # selected request valid
+                          and bool(current["flags"] & 4096) == state.pivot
+                          and current["requested"] == (0, 0, 0)
+                          and current["applied_mode"] == (4 if state.pivot else 1)
+                          and current["applied_v"] == 0 and current["applied_w"] == 0):
+                        state.complete_mode()
+                        stop_marker = None
+                        feedback["message"] = "정지 지령 확인 · 모드 전환 완료"
+                else:
+                    stop_marker = None
+                values = state.tick(now - previous)
+                previous = now
+                if current["auto"] and not control_bridge.estop:
+                    outgoing = values
+                    enabled = True
+                else:
+                    outgoing = [0.0, 0.0, 0.0]
+                    enabled = False
+                control_bridge.publish_command(outgoing, enable=enabled, pivot=state.pivot,
+                                               identity=current["identity"])
+                token_seq += 1
+                issued_tokens[token_seq] = now
+                for old_token, at in list(issued_tokens.items()):
+                    if now - at > settings.control_watchdog_timeout:
+                        del issued_tokens[old_token]
+                await asyncio.wait_for(websocket.send_json({"type": "control_state", **state.snapshot(),
+                    "token": token_seq, "last_event": last_event,
+                    "estop": control_bridge.estop, "message": feedback["message"],
+                    "authority": "control" if current["auto"] else "standby",
+                    "telemetry_fresh": current["fresh"], "enabled": enabled,
+                    "outgoing": outgoing,
+                    "command_topic": settings.command_topic}), timeout=settings.control_watchdog_timeout)
+                await asyncio.sleep(0.05)
+
+        tasks = [asyncio.create_task(receive_inputs()), asyncio.create_task(transmit_targets())]
+        try:
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                task.result()
+        except (WebSocketDisconnect, RuntimeError, OSError, ValueError, TimeoutError) as error:
+            logger.info("Control session ended: %s", error)
+            try:
+                await asyncio.wait_for(websocket.send_json({"type": "error", "message": str(error)}), timeout=0.2)
+            except (RuntimeError, OSError, TimeoutError):
+                pass
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            try:
+                await control_bridge.stop()
+            finally:
+                # A failed ROS disable publication must not retain controller ownership.
+                if active_control_socket is websocket:
+                    active_control_socket = None
+                try:
+                    await websocket.close()
+                except (RuntimeError, OSError):
+                    pass
 
     return app

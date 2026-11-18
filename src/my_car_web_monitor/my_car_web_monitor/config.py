@@ -15,6 +15,9 @@ class Settings:
     height: int = int(os.getenv("CAMERA_HEIGHT", "720"))
     fps: int = int(os.getenv("CAMERA_FPS", "15"))
     webrtc_packet_max: int = int(os.getenv("WEBRTC_PACKET_MAX", "1100"))
+    command_topic: str = os.getenv("MCU_COMMAND_TOPIC", "/mcu_bridge_node/command")
+    control_ramp_seconds: float = float(os.getenv("CONTROL_RAMP_SECONDS", "1.0"))
+    control_mouse_return_seconds: float = float(os.getenv("CONTROL_MOUSE_RETURN_SECONDS", "2.0"))
     cmd_vel_topic: str = os.getenv("CMD_VEL_TOPIC", "/cmd_vel")
     motor_status_topic: str = os.getenv("MOTOR_STATUS_TOPIC", "/telemetry")
     control_linear_speed: float = float(os.getenv("CONTROL_LINEAR_SPEED", "2.0"))
@@ -27,6 +30,12 @@ class Settings:
     log_level: str = os.getenv("LOG_LEVEL", "info")
 
     def __post_init__(self) -> None:
+        if not math.isfinite(self.control_ramp_seconds) or self.control_ramp_seconds <= 0:
+            raise ValueError("CONTROL_RAMP_SECONDS must be positive")
+        if not math.isfinite(self.control_mouse_return_seconds) or self.control_mouse_return_seconds <= 0:
+            raise ValueError("CONTROL_MOUSE_RETURN_SECONDS must be positive")
+        if not math.isfinite(self.control_watchdog_timeout) or not 0 < self.control_watchdog_timeout < 0.5:
+            raise ValueError("CONTROL_WATCHDOG_TIMEOUT must be in (0, 0.5)")
         for axis in ("linear", "angular"):
             maximum = getattr(self, f"control_{axis}_speed")
             minimum = getattr(self, f"control_{axis}_speed_min")

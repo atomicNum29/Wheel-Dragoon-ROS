@@ -29,7 +29,7 @@ setup(
     zip_safe=True,
     maintainer="Bak siu",
     maintainer_email="atomicw63.546@gmail.com",
-    description="Receive-only Wheel-Dragoon feedback bridge and telemetry collection.",
+    description="Wheel-Dragoon motion command bridge, typed feedback, and telemetry aggregation.",
     license="Apache-2.0",
     extras_require={"test": ["pytest"]},
     entry_points={

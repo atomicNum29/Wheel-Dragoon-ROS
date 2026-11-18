@@ -3,7 +3,7 @@
 <package format="3">
   <name>my_car_mcu_bridge</name>
   <version>0.1.0</version>
-  <description>Receive-only Wheel-Dragoon feedback bridge and telemetry aggregator.</description>
+  <description>Wheel-Dragoon motion command bridge, typed feedback, and telemetry aggregation.</description>
   <maintainer email="atomicw63.546@gmail.com">Bak siu</maintainer>
   <license>Apache-2.0</license>
 

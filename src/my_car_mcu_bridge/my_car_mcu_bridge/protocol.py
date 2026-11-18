@@ -65,3 +65,22 @@ def try_parse_packet(buffer, on_error=None):
                      "applied_v_milli", "applied_theta_milli", "applied_w_milli")
             fields.update(zip(names, struct.unpack_from("<hhhhhh", packet, 14)))
         return kind, fields
+
+
+def pack_motion_command(seq, v_milli=0, theta_milli=0, w_milli=0,
+                        *, enable=False, estop=False, pivot=False):
+    """Encode Wheel-Dragoon 0x03 v1 (15 bytes); reject invalid combinations."""
+    for name, value, lower, upper in (
+        ("seq", seq, 0, 65535), ("v", v_milli, -2000, 2000),
+        ("theta", theta_milli, -845, 845), ("w", w_milli, -5000, 5000),
+    ):
+        if type(value) is not int or not lower <= value <= upper:
+            raise ValueError(f"{name} must be an integer in {lower}..{upper}")
+    if any(type(value) is not bool for value in (enable, estop, pivot)):
+        raise ValueError("command flags must be boolean")
+    if (pivot and (v_milli or theta_milli)) or (not pivot and w_milli):
+        raise ValueError("unused motion fields must be zero")
+    flags = int(enable) | (int(estop) << 1) | (int(pivot) << 2)
+    frame = b"\xaa\x55\x0b\x03\x01" + struct.pack(
+        "<HBhhh", seq, flags, v_milli, theta_milli, w_milli)
+    return frame + bytes([xor_checksum(frame)])
