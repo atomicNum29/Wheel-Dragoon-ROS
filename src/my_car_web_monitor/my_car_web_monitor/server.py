@@ -219,7 +219,11 @@ def create_app(node: Node, settings: Settings) -> FastAPI:
                     event_id = payload.get("event_id")
                     if type(event_id) is not int or event_id <= last_event:
                         raise ValueError("잘못된 입력 순번")
-                    if kind in ("input", "mode") and payload.get("input_epoch") != state.input_epoch:
+                    if kind in ("input", "mode", "clear_estop") and control_bridge.feedback()["control_signal_estop"]:
+                        # Firmware recovery is owned by RC POWERDOWN -> STOP.
+                        # Ignore these requests without emitting operator instructions.
+                        feedback["message"] = ""
+                    elif kind in ("input", "mode") and payload.get("input_epoch") != state.input_epoch:
                         feedback["message"] = "이전 입력은 폐기되었습니다 · 새로 조작하세요"
                     elif kind == "input":
                         accepted = state.input(payload.get("source"), payload.get("active"),
@@ -274,10 +278,12 @@ def create_app(node: Node, settings: Settings) -> FastAPI:
                     state.suspend()
                     stop_marker = None
                 previous_feedback = current
-                if control_bridge.estop:
+                if control_bridge.estop or current["control_signal_estop"]:
                     if state.owner is not None or state.switching or any(state.values):
                         state.reset()
                     stop_marker = None
+                    if current["control_signal_estop"]:
+                        feedback["message"] = ""
                 elif state.switching:
                     if not current["auto"]:
                         stop_marker = None
@@ -299,7 +305,7 @@ def create_app(node: Node, settings: Settings) -> FastAPI:
                     stop_marker = None
                 values = state.tick(now - previous)
                 previous = now
-                if current["auto"] and not control_bridge.estop:
+                if current["auto"] and not (control_bridge.estop or current["control_signal_estop"]):
                     outgoing = values
                     enabled = True
                 else:
@@ -315,6 +321,7 @@ def create_app(node: Node, settings: Settings) -> FastAPI:
                 await asyncio.wait_for(websocket.send_json({"type": "control_state", **state.snapshot(),
                     "token": token_seq, "last_event": last_event,
                     "estop": control_bridge.estop, "message": feedback["message"],
+                    "control_signal_estop": current["control_signal_estop"],
                     "authority": "control" if current["auto"] else "standby",
                     "telemetry_fresh": current["fresh"], "enabled": enabled,
                     "outgoing": outgoing,

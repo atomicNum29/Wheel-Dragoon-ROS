@@ -80,7 +80,8 @@ class McuBridgeNode(Node):
                     self.mcu_status = message
                     self.mcu_status_at = time.monotonic()
                     if self.command is not None and self.command.enable and (
-                            message.mode != 2 or message.flags & (128 | 256)):
+                            message.mode != McuStatus.MODE_AUTO or message.flags & (
+                                McuStatus.FLAG_DRIVER_POWERDOWN | McuStatus.FLAG_DRIVER_STARTING)):
                         self.command = None
                 publisher.publish(message)
             if len(chunk) < 512:
@@ -106,8 +107,11 @@ class McuBridgeNode(Node):
                 and now - self.connected_at > 0.55)
 
     def auto_ready(self, now):
-        return (self.link_ready(now) and self.mcu_status.mode == 2
-                and not self.mcu_status.flags & (128 | 256))
+        # The MCU retains effective AUTO during healthy receiver failsafe.
+        # FAILSAFE and its POWERDOWN recovery phase never permit enabled output.
+        return (self.link_ready(now) and self.mcu_status.mode == McuStatus.MODE_AUTO
+                and not self.mcu_status.flags & (
+                    McuStatus.FLAG_DRIVER_POWERDOWN | McuStatus.FLAG_DRIVER_STARTING))
 
     def accept_command(self, message):
         now = time.monotonic()

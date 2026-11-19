@@ -6,7 +6,7 @@ from typing import Any
 
 from rclpy.node import Node
 import json
-from my_car_interfaces.msg import RobotTelemetry, MotionCommand
+from my_car_interfaces.msg import RobotTelemetry, MotionCommand, McuStatus
 from rosidl_runtime_py.convert import message_to_ordereddict
 
 from my_car_web_monitor.config import Settings
@@ -48,8 +48,11 @@ class RosControlBridge:
             return {
                 "fresh": fresh, "identity": self._telemetry_identity,
                 "revision": self._feedback_revision,
-                "auto": bool(fresh and status is not None and status.mode == 2
-                             and not status.flags & (128 | 256)),
+                "auto": bool(fresh and status is not None and status.mode == McuStatus.MODE_AUTO
+                             and not status.flags & (
+                                 McuStatus.FLAG_DRIVER_POWERDOWN | McuStatus.FLAG_DRIVER_STARTING)),
+                "control_signal_estop": bool(fresh and status is not None
+                                             and self.control_signal_estop(status)),
                 "flags": status.flags if status is not None else 0,
                 "applied_mode": status.applied_mode if status is not None else 255,
                 "applied_v": status.applied_v_milli if status is not None else None,
@@ -57,6 +60,16 @@ class RosControlBridge:
                 "requested": ((status.requested_v_milli, status.requested_theta_milli,
                                status.requested_w_milli) if status is not None else None),
             }
+
+    @staticmethod
+    def control_signal_estop(status):
+        """Identify only combinations reported by the MCU's latched recovery path."""
+        if status.mode == McuStatus.MODE_FAILSAFE:
+            return True
+        required = McuStatus.FLAG_ESTOP_ACTIVE | McuStatus.FLAG_DRIVER_POWERDOWN
+        return (status.mode == McuStatus.MODE_POWERDOWN
+                and status.state == McuStatus.STATE_ESTOP
+                and (status.flags & required) == required)
 
     def publish_command(self, values, *, enable, pivot=False, identity=None):
         if identity is None:
@@ -105,7 +118,11 @@ class RosControlBridge:
                     self._feedback_revision += 1
                 self._telemetry_identity = (message.status.connection_id, message.status.session)
                 self._telemetry_message = message.status
-                reported_estop = bool(message.status.flags & 32)
+                # MCU failsafe recovery is physical POWERDOWN -> STOP. Do not
+                # turn that shared ESTOP_ACTIVE bit into a sticky host estop.
+                reported_estop = (message.status.mode == McuStatus.MODE_AUTO
+                                  and bool(message.status.flags & McuStatus.FLAG_ESTOP_ACTIVE)
+                                  and not self.control_signal_estop(message.status))
                 if reported_estop and not self._reported_estop:
                     self.estop = True
                 self._reported_estop = reported_estop
@@ -114,6 +131,8 @@ class RosControlBridge:
         # Web JSON is produced only at this browser boundary.
         status.update(version=1, schema="split_v1", status_present=value["status_present"],
                       status_age_sec=value["status_age_sec"])
+        status["control_signal_estop"] = bool(message.status_present
+                                             and self.control_signal_estop(message.status))
         status["wheels"] = {
             name: {**value["wheels"][idx], "present": value["wheel_present"][idx],
                    "age_sec": value["wheel_age_sec"][idx],

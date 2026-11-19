@@ -53,7 +53,7 @@ def try_parse_packet(buffer, on_error=None):
                 fields.update(driver_id=identity, voltage_mv=struct.unpack_from("<H", packet, 12)[0])
         else:
             mode, transition = packet[8] & 15, packet[8] >> 4
-            if mode > 4 or transition > 5:
+            if mode > 5 or transition > 5:
                 if on_error:
                     on_error("Unsupported mode or transition")
                 continue

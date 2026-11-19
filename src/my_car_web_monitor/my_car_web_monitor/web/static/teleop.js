@@ -52,6 +52,8 @@
     inputEpoch = null;
     switching = false;
     steeringStep = 0;
+    modeButton.disabled = false;
+    byId("clear-estop").disabled = false;
     configureMode();
     limits.forEach(input => { input.disabled = false; });
     applyLimitsButton.disabled = false;
@@ -68,7 +70,7 @@
   }
   function editable(target) { return target?.closest("input,textarea,select,[contenteditable=true]"); }
   function toggleMode() {
-    if (!available()) return;
+    if (!available() || estop) return;
     if (switching || physical.size || pointerHeld) {
       notice("눌린 키·드래그 또는 진행 중인 모드 전환이 우선합니다");
       return;
@@ -99,7 +101,7 @@
     }
   }
   function configureMode() {
-    modeButton.textContent = switching ? "정지 지령 확인 중" : pivot ? "PIVOT · P로 일반 전환" : "일반 주행 · P로 PIVOT 전환";
+    modeButton.textContent = switching ? "정지 지령 확인 중" : pivot ? "PIVOT" : "일반 주행";
     byId("steering-step").textContent = pivot ? "PIVOT · 연속 각속도 입력" : `조향 단계: ${steeringStep > 0 ? "좌 " + steeringStep : steeringStep < 0 ? "우 " + -steeringStep : "중앙 0"} / 5`;
     pad.dataset.pivot = String(pivot);
     pad.querySelector(".joystick-label").textContent = pivot ? "← 좌회전 · 우회전 →" : "↑ 전진 · 좌우 조향 · ↓ 후진";
@@ -133,10 +135,12 @@
           else send({type:"heartbeat"}, false);
         }, 50);
       }
-      byId("control-state").textContent = data.estop ? "비상정지" : data.switching ? "연결됨·정지 확인" : data.enabled ? "연결됨·제어" : "연결됨·대기";
+      byId("control-state").textContent = data.estop || data.control_signal_estop ? "비상정지" : data.switching ? "연결됨·정지 확인" : data.enabled ? "연결됨·제어" : "연결됨·대기";
       disconnect.disabled = false;
       if (performance.now() > noticeUntil) error.textContent = data.message || "";
-      estop = data.estop;
+      estop = data.estop || data.control_signal_estop;
+      byId("clear-estop").disabled = Boolean(data.control_signal_estop);
+      modeButton.disabled = Boolean(data.control_signal_estop);
       const epochChanged = data.input_epoch !== inputEpoch;
       if (epochChanged) {
         inputEpoch = data.input_epoch;
@@ -275,9 +279,6 @@
   window.addEventListener("blur", () => { physical.clear(); pointerHeld = false; closeControl("포커스 이탈 · 다시 연결하세요"); });
   document.addEventListener("visibilitychange", () => { if (document.hidden) closeControl("탭 이탈 · 다시 연결하세요"); });
   window.addEventListener("pagehide", () => closeControl());
-  fetch("/control/config").then(response => response.json()).then(config => {
-    byId("ramp-info").textContent = `AUTO에서 입력 적용 · 속도 증가/복귀 ${config.ramp_seconds}초 · 마우스 복귀 ${config.mouse_return_seconds}초`;
-  }).catch(() => { error.textContent = "제어 설정을 불러오지 못했습니다"; });
   configureMode();
   disconnect.disabled = true;
 })();

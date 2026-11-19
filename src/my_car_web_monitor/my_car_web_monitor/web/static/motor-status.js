@@ -16,7 +16,7 @@
     ["SERIAL_CHECKSUM_ERROR", "시리얼 체크섬 오류", "수신 패킷의 체크섬이 일치하지 않습니다. 진단 이벤트입니다.", "warn"],
     ["COMMAND_TIMEOUT", "주행 명령 시간 초과", "AUTO 모드에서 정상 명령이 500 ms 넘게 수신되지 않았습니다. 현재 timeout 조건 동안 TIMEOUT_STOP으로 출력을 금지합니다. 조건 해제 뒤 남은 보고 비트만으로 정지를 연장하지 않습니다.", "warn"],
     ["CAN_TX_FAILURE", "CAN 송신 실패", "CAN 초기화 또는 송신 실패입니다. 구동·안전 송신 실패는 잔여 보고 동안 FAULT와 출력 차단을 유지하며, 전압 조회 송신 실패는 진단 전용입니다. 최종 MCU 상태를 함께 확인하세요.", "warn"],
-    ["EMERGENCY_STOP_ACTIVE", "비상 정지 활성", "E-stop 입력이 감지되었습니다. 현재 입력이 활성인 동안 ESTOP으로 출력을 금지합니다. 입력 해제 뒤 남은 보고 비트만으로 ESTOP을 연장하지 않습니다.", "bad"],
+    ["EMERGENCY_STOP_ACTIVE", "비상 정지 보고", "호스트 estop 또는 MCU 제어 신호 상실 비상 정지가 보고되었습니다.", "bad"],
     ["BATTERY_LOW", "배터리 저전압", "두 전압이 유효할 때 하나 이상이 21.0 V 미만으로 감지되었습니다. 유효한 저전압 조건에서 보고 횟수를 갱신하며 잔여 보고 동안 FAULT와 TQ-OFF를 유지합니다.", "bad"],
     ["SERIAL_FRAMING_ERROR", "시리얼 프레임 오류", "패킷 헤더·길이·종류가 올바르지 않습니다. 진단 이벤트입니다.", "warn"],
     ["COMMAND_OUT_OF_RANGE", "속도 명령 범위 초과", "허용 범위를 벗어난 속도 명령을 MCU가 거부했습니다.", "warn"],
@@ -199,7 +199,7 @@
         : "측정값은 MCU validity와 메시지 수신 시각이 모두 유효할 때 표시됩니다. 회전수·거리는 엔코더 원점 기준이며 16,384 count/회전, 바퀴 지름 130 mm로 계산합니다. 거리는 부호 있는 이론값입니다.";
       refs["mcu-detail"].textContent = `${view.state?.[1] || "—"} · ${view.schema === "v2" ? "Split telemetry v1" : view.schema === "legacy" ? "Legacy" : "—"} · seq ${view.seq}${serverCount === null ? "" : ` · ROS 수신 #${serverCount}`} · ${Number.isFinite(age) ? `${age.toFixed(1)} s 전 수신` : "수신 시각 없음"}`;
       const live = view.fresh && latest?.schema === "split_v1";
-      const modes = ["STOP", "MANUAL", "AUTO", "POWERDOWN", "PIVOT"];
+      const modes = ["STOP", "MANUAL", "AUTO", "POWERDOWN", "PIVOT", "FAILSAFE"];
       const stages = ["초기화", "주행 단계", "감속 중", "조향 중", "안정 대기", "비상 정지"];
       const flags = live ? latest.flags : 0;
       for (const [prefix, validBit, pivot] of [
@@ -218,7 +218,7 @@
         refs[`${prefix}-mode`].textContent = valid ? pivot ? "PIVOT" : "일반 v · θ" : "—";
       }
       const indicators = [
-        ["rc-mode", `RC · ${live ? modes[latest.mode] || "알 수 없음" : "—"}`, "neutral"],
+        ["rc-mode", `운용 · ${live ? modes[latest.mode] || "알 수 없음" : "—"}`, live && latest.control_signal_estop ? "bad" : "neutral"],
         ["motion-stage", `모션 · ${live ? stages[latest.transition] || "알 수 없음" : "—"}`, live && latest.transition === 5 ? "bad" : "neutral"],
         ["drive-gate", !live ? "구동 · 확인 불가" : flags & 512 ? "구동 허용" : "구동 차단", live ? flags & 512 ? "ok" : "warn" : "neutral"],
         ["steering-valid", !live ? "조향 보정 · —" : flags & 1024 ? "조향 보정 유효" : "조향 보정 무효", live && !(flags & 1024) ? "warn" : "neutral"],

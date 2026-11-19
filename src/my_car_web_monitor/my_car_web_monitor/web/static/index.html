@@ -155,15 +155,13 @@
         </section>
       </div>
       <section class="panel teleop-panel" aria-label="웹 주행 제어">
-        <div class="teleop-heading"><h2>웹 주행 제어</h2><button id="toggle-pivot">일반 주행 · P로 전환</button><span id="input-owner" class="muted">입력 대기</span><span class="muted" id="ramp-info">AUTO에서 입력 적용 · 속도 증가/복귀 1초 · 마우스 복귀 2초</span></div>
+        <div class="teleop-heading"><h2>웹 주행 제어</h2><button id="toggle-pivot">일반 주행</button><span id="input-owner" class="muted">입력 대기</span></div>
         <div class="teleop-layout">
           <div class="teleop-settings">
             <label for="limit-linear"><span>최대 선속도</span><input id="limit-linear" type="number" inputmode="decimal" min="0.001" max="2" step="0.001" value="2"><span>m/s</span></label>
             <label for="limit-steering"><span>최대 중앙 조향각</span><input id="limit-steering" type="number" inputmode="decimal" min="0.001" max="0.845" step="0.001" value="0.845"><span>rad</span></label>
             <label for="limit-angular"><span>최대 PIVOT 각속도</span><input id="limit-angular" type="number" inputmode="decimal" min="0.001" max="5" step="0.001" value="5"><span>rad/s</span></label>
             <div class="limit-actions"><button id="apply-limits">최대값 적용</button><span id="limits-status" class="muted" role="status">현재 최대값</span></div>
-            <p class="keyboard-note">W/S 선속도 · A/D 조향 1단계씩 · P 정지 후 모드 전환</p>
-            <p class="keyboard-note">PIVOT: A/D 연속 각속도 · 조향 단계는 키를 놓아도 유지됩니다. P는 누른 키·드래그가 없을 때 사용합니다.</p>
             <p id="steering-step" class="keyboard-note">조향 단계: 중앙 0 / 5</p>
             <p id="local-command" class="status-list">웹 목표: —</p>
           </div>
@@ -173,7 +171,6 @@
           </div>
         </div>
         <p id="control-error" class="bad" role="status"></p>
-        <p class="keyboard-note">AUTO 외에는 연결을 유지하고 0·disable을 전송합니다. 연결 해제·탭 이탈·입력 만료 시 구동을 해제합니다. 비상정지는 AUTO에서 TQ-OFF와 비상 조향 자세를 요청합니다.</p>
       </section>
       <section id="motor-dashboard" class="panel motor-dashboard" lang="ko" aria-label="차량 및 모터 상태"></section>
     </main>
