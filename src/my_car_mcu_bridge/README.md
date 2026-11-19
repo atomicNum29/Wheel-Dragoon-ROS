@@ -51,7 +51,7 @@ ros2 run my_car_mcu_bridge telemetry_aggregator
 | 0xA0 | 미디코딩 | 14 / 18 | 위와 동일 |
 | 0xA1 | 미디코딩 | 52 / 56 | 위와 동일 |
 
-파서는 누적 bytearray에서 프레임 일부를 보존하고 한 read의 여러 패킷을 순차 처리한다. 잘못된 type/길이·checksum은 한 바이트 이동하여 재동기화한다. 정상 프레임의 미지원 version은 전체 소비 후 경고하고 발행하지 않는다. wheel/driver ID와 mode/transition 범위를 검사한다. flags/state/예약 필드의 모든 의미를 검증하는 파서는 아니며, 허용된 프레임의 나머지 필드는 그대로 보존한다.
+파서는 누적 bytearray에서 프레임 일부를 보존하고 한 read의 여러 패킷을 순차 처리한다. 잘못된 type/길이·checksum은 한 바이트 이동하여 재동기화한다. 정상 프레임의 미지원 version은 전체 소비 후 경고하고 발행하지 않는다. wheel/driver ID와 mode(0..5)/transition(0..5) 범위를 검사한다. flags/state/예약 필드의 모든 의미를 검증하는 파서는 아니며, 허용된 프레임의 나머지 필드는 그대로 보존한다.
 
 한 읽기 callback은 최대 512 bytes × 8회를 읽는다. 검증·디코딩한 피드백은 추가 동기화 대기 없이 즉시 발행한다. 기본 읽기 타이머 100Hz는 메시지 발행률 보장이 아니다. MCU는 유효 CAN 응답마다 0x85/86을 만들고 0x87은 목표 100Hz로 생성하므로 서로 다른 주기로 도착할 수 있다.
 
@@ -98,7 +98,7 @@ ROS 입력은 SI 단위 선속도·중앙 조향각·PIVOT 각속도다. 각 필
 
 ROS stamp는 생성 시각이며 브리지와 같은 ROS 시간 기준을 사용해야 한다. 수신과 송신 모두 stamp age가 0..command_timeout_sec인지 확인한다. connection_id/session은 현재 피드백 경계와 일치해야 한다. stamp·connection_id·session은 host 검증용이며 wire에는 포함하지 않는다.
 
-포트 연결 후 0.55초 대기하고, 최신 0x87이 있는 CONTROL 상태에서 0·disable 명령을 받는다. enable=true 명령은 추가로 RC AUTO이며 POWERDOWN/드라이버 시작 대기가 아닐 때만 허용한다. disable 명령의 motion 필드는 모두 0이어야 한다. 이 대기는 RC 모드 전환마다 재시작하지 않는다. 호스트 재시작으로 초기화된 seq에 대해 MCU의 이전 명령 timeout을 기다리기 위한 것이다. seq는 포트 재연결만으로 초기화하지 않는다. MCU ACK/수락 seq echo는 없다.
+포트 연결 후 0.55초 대기하고, 최신 0x87이 있는 CONTROL 상태에서 0·disable 명령을 받는다. enable=true 명령은 추가로 MCU 유효 운용 모드가 AUTO이며 POWERDOWN/드라이버 시작 대기가 아닐 때만 허용한다. disable 명령의 motion 필드는 모두 0이어야 한다. 이 대기는 RC 모드 전환마다 재시작하지 않는다. 호스트 재시작으로 초기화된 seq에 대해 MCU의 이전 명령 timeout을 기다리기 위한 것이다. seq는 포트 재연결만으로 초기화하지 않는다. MCU ACK/수락 seq echo는 없다.
 
 최신 목표 하나만 유지하고 같은 목표도 새 seq로 송신한다. 명령 만료 시 enable=0을 한 번 시도하고 캐시를 비운다. 활성 estop은 만료 시 disable에도 유지한다. 포트 단절·RC 모드 또는 CONTROL session 변경·상태 만료에서는 목표를 폐기하며 재연결 후 재생하지 않는다. 상태가 없어 송신을 멈춘 경우 MCU 자체 500ms timeout이 남은 정지 경로다.
 
@@ -119,7 +119,7 @@ ROS stamp는 생성 시각이며 브리지와 같은 ROS 시간 기준을 사용
 
 ## 상태와 지령 해석
 
-state, RC mode, transition은 서로 다른 정보다. DRIVING 단계도 실제 이동 확인이 아니며, motor_enabled와 drive gate도 드라이버 적용 ACK가 아니다. 요청 지령은 선택된 입력 목표, 적용 지령은 스케줄러의 생성 지령이다. 조향 실측값은 수신하지 않는다.
+state, 유효 운용 mode, transition은 서로 다른 정보다. DRIVING 단계도 실제 이동 확인이 아니며, motor_enabled와 drive gate도 드라이버 적용 ACK가 아니다. 요청 지령은 선택된 입력 목표, 적용 지령은 스케줄러의 생성 지령이다. 조향 실측값은 수신하지 않는다.
 
 0x87에는 MCU timestamp나 uptime이 없다. ROS received_at을 MCU 생성 시각이라고 해석하지 않는다. 휠/전압의 rx_timestamp_us는 CAN ISR 수신 시각이며 uint32로 약 71.6분마다 순환한다. 순번과 session도 순환하므로 모든 재시작을 판별할 수 없다.
 
@@ -132,7 +132,7 @@ MCU 규격의 의미를 설명하며 ROS는 오류 카운터를 재현하거나 
 | 0 | USB checksum 오류 |
 | 1 | command timeout 보고 |
 | 2 | CAN 안전 송신 또는 전압 조회 실패 |
-| 3 | host estop 보고 |
+| 3 | host estop 또는 제어 신호 상실 비상 정지 보고 |
 | 4 | 저전압 |
 | 5 | framing / 지원하지 않는 요청 |
 | 6 | 명령 범위 또는 운동 모드 필드 오류 |
@@ -147,9 +147,23 @@ MCU 규격의 의미를 설명하며 ROS는 오류 카운터를 재현하거나 
 
 일반 오류는 감지 시 잔여 보고 10회로 갱신한다. 0x87 전체 송신 완료 후 해당 스냅샷의 CONTROL 세션·오류 revision·CAN overrun 수가 현재와 같을 때 카운터를 감소시킨다. 휠·전압·진단 송신은 차감 조건이 아니다. bit12/13은 별도 래치이며 같은 세션에서 해당 오류를 담은 상태 프레임 전체 write가 끝나고 이후 재감지가 없을 때 해제한다. 아직 보고하지 못한 USB 오류는 세션 초기화만으로 지워지지 않는다.
 
-과거 보고 비트와 현재 활성 estop/timeout을 구분하며 최종 MCU state를 함께 확인한다. USB bit12/13 자체는 구동 차단 조건이 아니다. 드라이버 fault·저전압 등 차단 조건은 MCU가 판단하며 ROS 화면은 관측값을 표시한다. host ACK나 로그 저장 확인 규격은 없다.
+과거 보고 비트와 현재 활성 estop/timeout을 구분하며 최종 MCU state를 함께 확인한다. USB bit12/13 보고 비트 자체는 직접 구동 차단 조건이 아니다. 다만 실제 송신 실패·폐기·스킵 이벤트는 MCU AUTO 구간의 USB 이상 집계에 포함되며 수신기 failsafe와 겹치면 제어 신호 상실 비상 정지로 이어질 수 있다. 드라이버 fault·저전압 등 차단 조건은 MCU가 판단하며 ROS 화면은 관측값을 표시한다. host ACK나 로그 저장 확인 규격은 없다.
 
 펌웨어 규격 근거: 형제 저장소 [USB 프로토콜](../../../Wheel-Dragoon/docs/usb-protocol.ko.md), [ROS USB 연동](../../../Wheel-Dragoon/docs/ros-usb-integration.ko.md). 형제 저장소가 함께 배치되어 있어야 이 링크가 열린다.
+
+## 수신기 failsafe와 제어 신호 상실 복구
+
+Wheel-Dragoon `8bf301e` 기준이다. `0x03`은 15바이트 v1, `0x87`은 29바이트 v1로 기존과 같다. 새 FAILSAFE 운용 모드 5를 허용하며 모든 피드백 필드를 기존 타입으로 발행한다. 메시지 상수가 추가되므로 인터페이스와 소비 노드를 함께 다시 빌드한다.
+
+수신기 모드 채널의 중앙값은 POWERDOWN=1000, STOP=1200, MANUAL=1400, PIVOT=1600, AUTO=1800, 수신기 failsafe=2000µs다. 펌웨어 구간은 1100 미만 POWERDOWN, 1100..1300 미만 STOP, 1300..1500 미만 MANUAL, 1500..1700 미만 PIVOT, 1700..1900 미만 AUTO이며, 원시 유효 펄스 1900µs 이상은 즉시 failsafe로 판정한다. 수신기가 이 값을 출력하도록 구성해야 한다. 펄스 자체의 수신 중단 타이머는 추가되지 않았다.
+
+수신기 failsafe 때 MCU는 다음 조건을 만족하면 유효 mode=AUTO와 기존 명령을 유지한다: 이미 AUTO, 해당 AUTO 구간에서 USB 명령 수락 및 정상 송신 이력 존재, CONTROL 상태, 드라이버 전원 차단/시작 대기·host estop·driver fault·저전압 없음, USB 이상 한계 미도달. 정상 USB AUTO 유지 중에는 ROS의 기존 AUTO 송신 경로를 그대로 사용하며 연결이나 명령을 초기화하지 않는다.
+
+그 밖에는 MCU가 제어 신호 상실 비상 정지를 래치하고 릴레이를 차단하며 비상 조향을 요청한다. mode=FAILSAFE(5), state=ESTOP(3), flags bit5/7=1이다. STOP·MANUAL·AUTO 선택이나 USB 명령만으로 래치를 풀 수 없다. 복구는 실제 RC POWERDOWN 진입 후 STOP 전환으로 수행한다. 복구 단계의 POWERDOWN은 mode=3이지만 state=3, bit5/7=1로 보고되므로 host estop과 구분한다. MCU는 복구 후 1000ms 드라이버 시작 대기와 중립 조향 복귀를 처리한다. ROS는 복구용 가짜 estop 해제·보호 리셋·전원 명령을 보내지 않는다.
+
+MCU의 USB 건강 상태 정책은 AUTO 진입 시 초기화되며 RX/TX 연속 이상을 따로 센다. 수신 또는 송신 연속 5회 또는 양방향 누적 30회에 도달하면 해당 AUTO 구간에서 한계 도달을 유지한다. seq 건너뜀도 수신 이상으로 집계하므로 브리지는 최신 목표 재송신마다 순차 u16 seq를 사용한다. 반대 방향 정상 통신은 다른 방향의 연속 횟수를 지우지 않는다.
+
+마지막 수락 명령 후 500ms 초과 시 기존 timeout 정지가 먼저 적용된다. 이후 60ms마다 RX 이상을 집계하므로 timeout이 300ms 지속되면 연속 5회, 즉 마지막 수락 후 총 800ms에서 한계에 도달한다. RC가 정상일 때 이 이상 집계만으로 릴레이를 차단하지는 않는다. 구체적 집계·구동 판정은 MCU가 수행하며 ROS는 보고 비트로 연속/누적 횟수를 역산하지 않는다.
 
 ## 검증 범위
 

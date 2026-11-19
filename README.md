@@ -71,6 +71,8 @@ flowchart LR
 
 패킷·오류 의미는 [MCU 브리지 문서](src/my_car_mcu_bridge/README.md), 필드·단위는 [인터페이스 문서](src/my_car_interfaces/README.md)를 참고한다.
 
+Wheel-Dragoon `8bf301e`의 수신기 failsafe 정책을 지원한다. 정상 USB 제어를 유지하는 동안 유효 AUTO를 따라 제어를 계속하며, FAILSAFE(5) 비상 정지에서는 입력을 초기화하고 구동을 허용하지 않는다. 명시적 POWERDOWN과 신호 상실은 MCU가 구분한다. MCU 래치 복구는 RC POWERDOWN → STOP이며 웹의 estop 해제와 별개다. 상세 정책과 사용 절차는 브리지·웹 문서에서 안내한다.
+
 ## 환경 준비 및 빌드
 
 ROS 2, ROS 환경과 호환되는 시스템 Python, `colcon`, `rosdep`, `uv`가 필요하다. 저장소에서 특정 ROS 2 배포판을 고정하지 않으므로 설치된 ROS 환경을 먼저 불러온다.

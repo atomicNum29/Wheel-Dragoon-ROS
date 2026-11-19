@@ -62,7 +62,7 @@ CAMERA_SOURCE=synthetic ros2 run my_car_web_monitor web_monitor_node
 
 상단 제어 연결 버튼 옆에는 미연결/연결 중/연결됨·대기/연결됨·제어/연결됨·정지 확인/비상정지만 표시하고 상세 사유는 제어 영역에 표시한다. 조이스틱은 제어 영역 우측에 배치하며 일반 모드는 280px 높이, PIVOT은 96px 높이다. 좁은 화면에서는 아래로 배치한다.
 
-상단에는 상태 수신 여부와 RC 모드·모션 단계·구동 허용·조향 보정 상태를 한 줄로 표시한다. 전압 A/B와 목표·적용 지령을 가로로 배치한다. 목표/적용은 각각 선속도 m/s, 중앙 조향각 rad, PIVOT 각속도 rad/s를 표시한다.
+상단에는 상태 수신 여부와 유효 운용 모드·모션 단계·구동 허용·조향 보정 상태를 한 줄로 표시한다. 전압 A/B와 목표·적용 지령을 가로로 배치한다. 목표/적용은 각각 선속도 m/s, 중앙 조향각 rad, PIVOT 각속도 rad/s를 표시한다.
 
 목표는 flags bit4, 적용값은 bit11이 유효할 때만 표시한다. 목표 운동 모드는 bit12, 적용 운동 모드는 `applied_mode`로 판별한다. 일반 v·θ와 PIVOT ω에서 사용하지 않는 항목 또는 무효값은 `—`로 표시한다. `—`를 0으로 해석하지 않는다. 적용값은 실측값이 아니며, 구동 gate가 1이어도 실제 이동이나 CAN 적용 ACK가 아니다.
 
@@ -150,7 +150,7 @@ ROS 영상은 mono8/8UC1/rgb8/bgr8/rgba8/bgra8와 JPEG/PNG 압축을 지원한�
 
 정지 요청 전 관측한 MCU 상태의 연결·세션과 새 seq 관측 횟수(host revision)를 기준으로, 다음 조건을 모두 만족하는 이후 피드백을 기다린다.
 
-1. 최신 RC AUTO 피드백이며 시작 대기/POWERDOWN이 아님.
+1. 최신 MCU 유효 운용 모드가 AUTO이며 시작 대기/POWERDOWN이 아님.
 2. 같은 연결·세션에서 새로운 MCU seq의 상태가 관측됨. 집계가 동일 샘플을 반복 발행하는 것은 새 확인으로 세지 않음.
 3. 목표 유효 bit4 및 적용 지령 유효 bit11이 1.
 4. 기존 요청 운동 모드(bit12)와 기존 적용 모드가 일치하고 요청 v/θ/ω가 모두 0.
@@ -160,11 +160,25 @@ ROS 영상은 mono8/8UC1/rgb8/bgr8/rgba8/bgra8와 JPEG/PNG 압축을 지원한�
 
 이는 MCU 생성 지령 기반 확인이며 실제 휠 정지 또는 개별 명령 ACK가 아니다. 0x87에는 명령 수락 seq echo가 없으므로 특정 요청과의 엄밀한 일대일 대응은 보장하지 않는다. STEERING/SETTLING 등 적용 지령 무효 상태의 0은 정지 확인에 사용하지 않는다.
 
-서버 `teleop.py`가 입력 중재와 ramp를 수행한다. `/ws/control`은 정규화 축 x/y와 source/active, 일반 키보드의 steer_delta(-1/0/+1), mode/limits 요청, 정상 stop, estop/clear_estop, heartbeat를 받는다. 입력 이벤트는 증가하는 event_id와 최근 서버 응답 token을 포함한다. token이 watchdog보다 오래되면 세션을 닫아 지연된 요청의 재생을 줄인다. 응답 control_state는 owner, pivot, neutral, 웹 입력, 실제 outgoing, enabled, authority, limits, steering_step, switching/pending_pivot, input_epoch, estop, token, 마지막 처리 event_id를 담는다. 입력·모드 요청은 최신 input_epoch도 포함하며 모드 전환·캐시 초기화 이전의 요청은 폐기한다.
+서버 `teleop.py`가 입력 중재와 ramp를 수행한다. `/ws/control`은 정규화 축 x/y와 source/active, 일반 키보드의 steer_delta(-1/0/+1), mode/limits 요청, 정상 stop, estop/clear_estop, heartbeat를 받는다. 입력 이벤트는 증가하는 event_id와 최근 서버 응답 token을 포함한다. token이 watchdog보다 오래되면 세션을 닫아 지연된 요청의 재생을 줄인다. 응답 control_state는 owner, pivot, neutral, 웹 입력, 실제 outgoing, enabled, authority, limits, steering_step, switching/pending_pivot, input_epoch, estop, control_signal_estop, token, 마지막 처리 event_id를 담는다. 입력·모드 요청은 최신 input_epoch도 포함하며 모드 전환·캐시 초기화 이전의 요청은 폐기한다.
 
 브라우저 heartbeat와 목표 송신은 20Hz다. 0.3초 브라우저 입력 만료·WebSocket 단절·서버 송신 지연 시 세션을 닫고 enable=0을 요청한다. RC 모드 변경·MCU 피드백 만료만으로 웹 세션을 닫지는 않는다. 피드백 만료나 연결/CONTROL 세션 경계 변경에서는 입력·조향 단계를 초기화하고 0·disable로 대기한다. 진행 중인 모드 전환은 새 피드백으로 정지 확인을 다시 시작한다. 단순 RC 모드 변경은 기존 웹 입력을 유지한다. 브리지의 명령 만료는 별도 0.3초이며 MCU는 수락 명령 기준 500ms timeout을 사용한다. 탭 숨김/창 포커스 이탈도 연결을 닫는다. 다시 연결하고 새 입력을 해야 하며 이전 목표를 재생하지 않는다. 이들은 물리적 정지 확인이 아니다.
 
 `중립 복귀`는 조향 단계 0과 속도 정상 ramp, `구동 해제`는 세션 종료/enable=0이다. `비상정지`는 AUTO의 TQ-OFF와 비상 조향 자세를 요청하며 일반 정지와 다르다. host estop은 세션 재연결이나 timeout으로 자동 해제하지 않고 별도 해제 버튼을 사용한다. RC MANUAL/PIVOT을 강제로 정지시키는 기능은 아니다.
+
+## MCU 제어 신호 상실 비상 정지
+
+Wheel-Dragoon `8bf301e`의 FAILSAFE(5)와 flags bit5 의미 확장을 지원한다. 웹에는 현재 운용 모드와 비상정지 상태만 표시하고 사용법·복구 안내·USB 이상 횟수 화면은 추가하지 않는다. 조작 안내 문구도 상태 표시와 분리하여 문서에서 제공한다.
+
+`control.py`의 `control_signal_estop`은 원시 wire 필드가 아니라 기존 상태 조합에서 계산한 값이다. mode=5이거나, 복구 중 mode=POWERDOWN(3)·state=ESTOP(3)·flags bit5/7이 모두 활성인 경우에만 이 경로로 판단한다. typed ROS 메시지는 원래 mode/state/flags를 보존하고 웹 상태 JSON과 control_state에 파생 bool을 제공한다.
+
+이 상태에서는 웹 입력과 대기 중인 일반/PIVOT 전환을 초기화하고 0·disable을 발행한다. 입력·모드 변경·웹 estop 해제 요청은 받아들이지 않으며 해당 해제 버튼도 비활성화한다. 펌웨어의 RC POWERDOWN → STOP 복구 후 세션 경계에서 다시 초기화하므로 이전 키/드래그/조향 단계가 재생되지 않는다. 복구 완료와 AUTO 재진입 후 새로 조작한다.
+
+MCU 제어 신호 상실 비상 정지를 host estop으로 자동 래치하지 않는다. 호스트의 명시적 비상정지와 AUTO에서 관측된 host estop은 기존 host 래치로 유지하되, 공유 bit5를 수신했다는 이유만으로 두 경로를 합치지 않는다. 따라서 물리적 MCU 복구 뒤 불필요한 웹 estop 해제를 요구하지 않는다. 별도로 눌렀던 host estop은 여전히 명시적으로 해제해야 한다.
+
+수신기 failsafe로 USB AUTO를 유지하는 중 웹 비상정지를 누르면 host estop이 활성화되어 MCU의 AUTO 유지 조건도 해제된다. 이때 MCU는 제어 신호 상실 비상 정지를 래치하고 릴레이를 차단한다. RC POWERDOWN → STOP으로 MCU를 복구한 뒤 웹 host estop도 별도로 해제해야 한다. 웹 비상정지 요청은 유효한 제어 연결에서 전달되며, 통신 단절 시 버튼 조작만으로 MCU 수신을 보장하지 않는다.
+
+수신기 failsafe 중에도 MCU가 정상 USB AUTO 권한을 유지하면 mode=2를 보내므로 웹의 enable과 현재 입력은 그대로 유지된다. 이 경우 현재 프로토콜로 RC 무선 연결 정상/유실을 구분할 수 없으므로 정상 RC 링크라고 표시하거나 유실 배지를 추정하지 않는다. USB 이상 연속/누적 횟수와 복구 중립화 전용 상태도 wire에 없으며, 이를 새 측정값처럼 만들지 않는다. 상세 복구·PWM·이상 한계는 [브리지 문서](../my_car_mcu_bridge/README.md#수신기-failsafe와-제어-신호-상실-복구)를 따른다.
 
 ## Capture-to-display latency estimate
 

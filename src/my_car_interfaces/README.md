@@ -66,7 +66,7 @@ MCU 제어 명령·피드백과 최신값 집계용 ROS 2 전용 메시지 패�
 | `builtin_interfaces/Time` | `received_at` | host ROS 수신 처리 시각 |
 | `uint16` | `seq` | 스트림별 MCU 생성 순번 |
 | `uint8` | `state` | MCU 구동/오류 상태 |
-| `uint8` | `mode` | RC 운전 모드 |
+| `uint8` | `mode` | MCU 유효 운용 모드, 정상 USB AUTO 유지 시 RC 유실이어도 2 |
 | `uint8` | `transition` | 모션 스케줄러 단계 |
 | `uint16` | `flags` | 상태 bit mask |
 | `uint16` | `system_error` | 시스템 오류 bit mask |
@@ -105,9 +105,9 @@ MCU 제어 명령·피드백과 최신값 집계용 ROS 2 전용 메시지 패�
 
 ## MCU 상태 열거값과 flags
 
-state: 0 DISABLED, 1 ENABLED, 2 TIMEOUT_STOP, 3 ESTOP, 4 FAULT, 5 BOOTING, 6 예약, 7 DRIVER_POWERDOWN.
+state: 0 DISABLED, 1 ENABLED, 2 TIMEOUT_STOP, 3 ESTOP, 4 FAULT, 5 BOOTING, 6 예약, 7 DRIVER_POWERDOWN. 제어 신호 상실 비상 정지가 활성화되면 릴레이가 차단되어도 DRIVER_POWERDOWN보다 ESTOP을 우선 보고한다.
 
-RC mode: 0 STOP, 1 MANUAL, 2 AUTO, 3 POWERDOWN, 4 PIVOT.
+유효 운용 mode: 0 STOP, 1 MANUAL, 2 AUTO, 3 POWERDOWN, 4 PIVOT, 5 FAILSAFE. `McuStatus`는 이 값의 MODE_* 상수와 STATE_ESTOP, FLAG_ESTOP_ACTIVE, FLAG_DRIVER_POWERDOWN, FLAG_DRIVER_STARTING 상수를 제공한다. 상수 추가만으로 필드 배치나 wire version은 바뀌지 않는다.
 
 transition: 0 STARTUP, 1 DRIVING, 2 BRAKING, 3 STEERING, 4 SETTLING, 5 EMERGENCY_STOP.
 
@@ -118,7 +118,7 @@ transition: 0 STARTUP, 1 DRIVING, 2 BRAKING, 3 STEERING, 4 SETTLING, 5 EMERGENCY
 | 2 | motion feasible |
 | 3 | RPM 크기 상한 적용, 모든 변화율 제한의 요약은 아님 |
 | 4 | 요청 목표 유효 |
-| 5 | 활성 host estop |
+| 5 | 활성 host estop 또는 제어 신호 상실 비상 정지 |
 | 6 | 활성 host command timeout |
 | 7 | driver powerdown |
 | 8 | driver starting |
@@ -128,7 +128,9 @@ transition: 0 STARTUP, 1 DRIVING, 2 BRAKING, 3 STEERING, 4 SETTLING, 5 EMERGENCY
 | 12 | 요청 운동 모드 PIVOT; bit4 유효일 때 해석 |
 | 13–15 | 예약 |
 
-일반 요청은 v·θ, PIVOT 요청은 ω를 사용한다. θ는 가상 전륜 중앙 조향각이며 좌우 실측 조향각이 아니다. 적용 모드는 RC mode와 다를 수 있다. STEERING/SETTLING/EMERGENCY_STOP 등 표현 불가 자세에서 적용 모드=255, bit11=0, 적용값=0이 올 수 있으므로 무효 0을 실제 정지·직진으로 해석하지 않는다.
+FAILSAFE(5)는 MCU의 제어 신호 상실 비상 정지 상태다. 복구 절차에서 POWERDOWN을 선택한 동안은 mode=3, state=3 및 flags bit5/7=1로 비상 정지를 계속 보고한다. 정상 USB AUTO를 유지하는 수신기 failsafe는 mode=2로 보고하며, 현재 패킷에는 원시 수신기 모드·RC 유실 여부·USB 이상 연속/누적 횟수가 별도로 없다. AUTO만 보고 RC 무선 연결이 정상이라고 판단할 수 없다.
+
+일반 요청은 v·θ, PIVOT 요청은 ω를 사용한다. θ는 가상 전륜 중앙 조향각이며 좌우 실측 조향각이 아니다. 적용 운동 모드는 유효 운용 mode와 별도다. STEERING/SETTLING/EMERGENCY_STOP 등 표현 불가 자세에서 적용 모드=255, bit11=0, 적용값=0이 올 수 있으므로 무효 0을 실제 정지·직진으로 해석하지 않는다.
 
 RobotTelemetry는 최신값 집합이다. present=false인 항목의 기본값은 측정값이 아니며, present=true여도 MCU validity와 age를 함께 확인해야 한다. 휠/전압에는 CONTROL session이 없고 상태에는 MCU timestamp가 없다. 동시 측정, boot 식별, 시각 동기화, 조향 추종을 보증하지 않는다. `/odom`으로 직접 사용할 수 있는 메시지가 아니다.
 
