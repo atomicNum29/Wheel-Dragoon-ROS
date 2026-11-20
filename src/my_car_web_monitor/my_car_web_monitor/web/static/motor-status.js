@@ -2,6 +2,7 @@
 (() => {
   "use strict";
   const STALE_SECONDS = 1.0;
+  const RC_SIGNAL_LOST = 1 << 13; // Status flags, independent of system_error bit13.
   const COUNTS_PER_REVOLUTION = 4096 * 4;
   const WHEEL_CIRCUMFERENCE_METERS = Math.PI * 0.13;
   const STATES = [
@@ -139,7 +140,7 @@
           <tbody><tr><th scope="row">목표 <span data-role="requested-valid" class="status-badge"></span></th><td data-role="requested-mode" class="motion-mode">—</td><td data-role="requested-v">—</td><td data-role="requested-theta">—</td><td data-role="requested-w">—</td></tr>
           <tr><th scope="row">적용 <span data-role="applied-valid" class="status-badge"></span></th><td data-role="applied-mode" class="motion-mode">—</td><td data-role="applied-v">—</td><td data-role="applied-theta">—</td><td data-role="applied-w">—</td></tr></tbody></table>
         </section>
-        <div class="operation-status" aria-label="운전 상태"><span data-role="rc-mode" class="status-badge"></span><span data-role="motion-stage" class="status-badge"></span><span data-role="drive-gate" class="status-badge"></span><span data-role="steering-valid" class="status-badge"></span></div>
+        <div class="operation-status" aria-label="운전 상태"><span data-role="rc-mode" class="status-badge"></span><span data-role="rc-signal" class="status-badge" role="status"></span><span data-role="motion-stage" class="status-badge"></span><span data-role="drive-gate" class="status-badge"></span><span data-role="steering-valid" class="status-badge"></span></div>
       </div>
       <p class="driving-alert" data-role="driving-alert" role="status"></p>
       <details class="vehicle-details" open><summary>차량 상세 · 모터 / 오류 / 통신</summary>
@@ -202,6 +203,8 @@
       const modes = ["STOP", "MANUAL", "AUTO", "POWERDOWN", "PIVOT", "FAILSAFE"];
       const stages = ["초기화", "주행 단계", "감속 중", "조향 중", "안정 대기", "비상 정지"];
       const flags = live ? latest.flags : 0;
+      const rcSignalKnown = live && integer(flags, 0, 65535);
+      refs["rc-signal"].title = "MCU flags bit13: 최신 유효 RC 모드 펄스의 수신기 failsafe 여부입니다. 제어권·비상정지와 독립적이며 펄스 수신 중단 타이머가 아닙니다.";
       for (const [prefix, validBit, pivot] of [
         ["requested", 16, Boolean(flags & 4096)],
         ["applied", 2048, latest?.applied_mode === 4],
@@ -219,6 +222,7 @@
       }
       const indicators = [
         ["rc-mode", `운용 · ${live ? modes[latest.mode] || "알 수 없음" : "—"}`, live && latest.control_signal_estop ? "bad" : "neutral"],
+        ["rc-signal", !rcSignalKnown ? "RC 상태 확인 불가" : flags & RC_SIGNAL_LOST ? "RC 신호 끊김" : "RC 신호 정상", rcSignalKnown ? flags & RC_SIGNAL_LOST ? "bad" : "ok" : "neutral"],
         ["motion-stage", `모션 · ${live ? stages[latest.transition] || "알 수 없음" : "—"}`, live && latest.transition === 5 ? "bad" : "neutral"],
         ["drive-gate", !live ? "구동 · 확인 불가" : flags & 512 ? "구동 허용" : "구동 차단", live ? flags & 512 ? "ok" : "warn" : "neutral"],
         ["steering-valid", !live ? "조향 보정 · —" : flags & 1024 ? "조향 보정 유효" : "조향 보정 무효", live && !(flags & 1024) ? "warn" : "neutral"],

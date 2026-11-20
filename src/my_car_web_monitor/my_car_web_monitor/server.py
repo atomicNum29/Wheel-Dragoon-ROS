@@ -16,6 +16,7 @@ from my_car_web_monitor.lidar import LidarStream
 from my_car_web_monitor.control import RosControlBridge
 from my_car_web_monitor.streams import StreamRegistry
 from my_car_web_monitor.teleop import TeleopState
+from my_car_web_monitor.control_health import ControlHealth
 
 logger = logging.getLogger(__name__)
 
@@ -200,22 +201,72 @@ def create_app(node: Node, settings: Settings) -> FastAPI:
         last_event = 0
         stop_marker = None
         previous_feedback = control_bridge.feedback()
+        focused = True
+        torque_enabled = True
+        communication_stopped = False
+        health = ControlHealth()
+        reported_client_errors = {"client_send": 0, "client_receive": 0}
+        next_rx_check = last_input + settings.control_watchdog_timeout
+        latest_status = None
+
+        def communication_error(channel, reason, count=1):
+            nonlocal communication_stopped, stop_marker
+            if health.error(channel, reason, count) and not communication_stopped:
+                communication_stopped = True
+                state.reset()
+                stop_marker = None
+                feedback["message"] = "통신 정지 · 복구 후 새로 조작하세요"
 
         async def receive_inputs():
-            nonlocal last_input, last_event
+            nonlocal last_input, last_event, focused, torque_enabled
+            nonlocal communication_stopped, next_rx_check
             while True:
-                payload = await websocket.receive_json()
-                if not isinstance(payload, dict):
-                    raise ValueError("JSON object required")
-                token = payload.get("token")
-                if type(token) is not int or time.monotonic() - issued_tokens.get(token, -1e9) > settings.control_watchdog_timeout:
-                    raise ValueError("오래된 제어 요청 · 다시 연결하세요")
-                kind = payload.get("type")
-                # Only fresh client heartbeats keep this controller alive.
-                if kind == "heartbeat":
-                    last_input = time.monotonic()
-                    continue
                 try:
+                    payload = await websocket.receive_json()
+                    if not isinstance(payload, dict):
+                        raise ValueError("JSON object required")
+                    token = payload.get("token")
+                    if (type(token) is not int or
+                            time.monotonic() - issued_tokens.get(token, -1e9) > settings.control_watchdog_timeout):
+                        raise ValueError("오래되거나 잘못된 제어 토큰")
+                    kind = payload.get("type")
+                    reports = payload.get("communication_errors", {})
+                    if (not isinstance(reports, dict) or
+                            any(key not in ("client_send", "client_receive") or type(count) is not int
+                                or not 0 <= count <= 2**53 - 1 for key, count in reports.items())):
+                        raise ValueError("잘못된 통신 오류 보고")
+                    if any(count < reported_client_errors[key] for key, count in reports.items()):
+                        raise ValueError("역순 통신 오류 보고")
+                    increments = {channel: reports.get(channel, total) - total
+                                  for channel, total in reported_client_errors.items()}
+                    reported_client_errors.update(reports)
+                    reports = increments
+                    for channel in ("client_send", "client_receive"):
+                        count = reports.get(channel, 0)
+                        if count:
+                            communication_error(channel, "브라우저 송신 적체/응답 오류", count)
+                        else:
+                            health.success(channel)
+                    if kind == "heartbeat":
+                        if type(payload.get("focused")) is not bool:
+                            raise ValueError("focused must be boolean")
+                        if any(type(payload.get(source + "_active")) is not bool
+                               for source in ("keyboard", "mouse")):
+                            raise ValueError("잘못된 입력 유지 상태")
+                        if focused and not payload["focused"]:
+                            state.stop_speed()
+                        focused = payload["focused"]
+                        # A lost key-up/pointer-up must not leave old motion held
+                        # once fresh heartbeats are flowing again. Never start
+                        # motion from a heartbeat or replay a steering increment.
+                        for source in ("keyboard", "mouse"):
+                            active = payload.get(source + "_active")
+                            if not active:
+                                state.input(source, False, 0, 0)
+                        last_input = time.monotonic()
+                        next_rx_check = last_input + settings.control_watchdog_timeout
+                        health.success("receive", exchange=not any(reports.values()))
+                        continue
                     event_id = payload.get("event_id")
                     if type(event_id) is not int or event_id <= last_event:
                         raise ValueError("잘못된 입력 순번")
@@ -225,9 +276,31 @@ def create_app(node: Node, settings: Settings) -> FastAPI:
                         feedback["message"] = ""
                     elif kind in ("input", "mode") and payload.get("input_epoch") != state.input_epoch:
                         feedback["message"] = "이전 입력은 폐기되었습니다 · 새로 조작하세요"
+                    elif kind == "focus":
+                        if type(payload.get("focused")) is not bool:
+                            raise ValueError("focused must be boolean")
+                        focused = payload["focused"]
+                        if not focused:
+                            state.stop_speed()
+                        feedback["message"] = "" if focused else "포커스 이탈 · 속도 0 유지"
+                    elif kind == "torque":
+                        if type(payload.get("enabled")) is not bool:
+                            raise ValueError("enabled must be boolean")
+                        torque_enabled = payload["enabled"]
+                        state.reset()
+                        feedback["message"] = "토크 활성화 · 새로 조작하세요" if torque_enabled else "토크 해제"
+                    elif kind == "input" and not torque_enabled:
+                        feedback["message"] = "토크 해제"
+                    elif kind == "input" and not focused:
+                        feedback["message"] = "포커스 이탈 · 속도 0 유지"
+                    elif (kind == "input" and communication_stopped and
+                          any(count for channel, count in health.consecutive.items() if channel != "receive")):
+                        feedback["message"] = "통신 정지 · 복구 후 새로 조작하세요"
                     elif kind == "input":
                         accepted = state.input(payload.get("source"), payload.get("active"),
                             payload.get("x"), payload.get("y"), payload.get("steer_delta", 0))
+                        if accepted and payload.get("active") and not any(reports.values()):
+                            communication_stopped = False
                         feedback["message"] = "" if accepted else "현재 입력 방식 또는 정지 확인이 우선합니다"
                     elif kind == "mode":
                         if state.request_mode(payload.get("pivot")):
@@ -258,18 +331,22 @@ def create_app(node: Node, settings: Settings) -> FastAPI:
                         raise ValueError("지원하지 않는 제어 요청")
                     last_event = event_id
                     last_input = time.monotonic()
+                    next_rx_check = last_input + settings.control_watchdog_timeout
+                    health.success("receive", exchange=not any(reports.values()))
                 except (ValueError, TypeError) as error:
-                    feedback["message"] = str(error)
-                    # Invalid input ends the session instead of refreshing old motion.
-                    raise ValueError(str(error)) from error
+                    # Discard this request. It neither refreshes the watchdog nor
+                    # revokes ownership; only the error limit requests a stop.
+                    communication_error("receive", str(error))
+                    next_rx_check = time.monotonic() + settings.control_watchdog_timeout
 
         async def transmit_targets():
-            nonlocal token_seq, stop_marker, previous_feedback
+            nonlocal stop_marker, previous_feedback, next_rx_check, latest_status
             previous = time.monotonic()
             while True:
                 now = time.monotonic()
-                if now - last_input > settings.control_watchdog_timeout:
-                    raise ValueError("입력 수신 만료 · 다시 연결하세요")
+                if focused and now >= next_rx_check:
+                    communication_error("receive", "입력 수신 공백")
+                    next_rx_check = now + settings.control_watchdog_timeout
                 current = control_bridge.feedback()
                 # RC authority changes do not disconnect the web session. Real
                 # telemetry loss or host/MCU session boundaries discard old input.
@@ -303,9 +380,11 @@ def create_app(node: Node, settings: Settings) -> FastAPI:
                         feedback["message"] = "정지 지령 확인 · 모드 전환 완료"
                 else:
                     stop_marker = None
-                values = state.tick(now - previous)
+                # Hidden tabs can throttle browser heartbeats. The live socket
+                # keeps publishing zero speed without advancing steering ramps.
+                values = state.tick(now - previous) if focused and not communication_stopped else state.values
                 previous = now
-                if current["auto"] and not (control_bridge.estop or current["control_signal_estop"]):
+                if torque_enabled and current["auto"] and not (control_bridge.estop or current["control_signal_estop"]):
                     outgoing = values
                     enabled = True
                 else:
@@ -313,22 +392,50 @@ def create_app(node: Node, settings: Settings) -> FastAPI:
                     enabled = False
                 control_bridge.publish_command(outgoing, enable=enabled, pivot=state.pivot,
                                                identity=current["identity"])
-                token_seq += 1
-                issued_tokens[token_seq] = now
-                for old_token, at in list(issued_tokens.items()):
-                    if now - at > settings.control_watchdog_timeout:
-                        del issued_tokens[old_token]
-                await asyncio.wait_for(websocket.send_json({"type": "control_state", **state.snapshot(),
-                    "token": token_seq, "last_event": last_event,
+                latest_status = {"type": "control_state", **state.snapshot(),
+                    "last_event": last_event, "torque_enabled": torque_enabled,
+                    "communication_stopped": communication_stopped,
                     "estop": control_bridge.estop, "message": feedback["message"],
                     "control_signal_estop": current["control_signal_estop"],
                     "authority": "control" if current["auto"] else "standby",
                     "telemetry_fresh": current["fresh"], "enabled": enabled,
-                    "outgoing": outgoing,
-                    "command_topic": settings.command_topic}), timeout=settings.control_watchdog_timeout)
+                    "outgoing": outgoing, "command_topic": settings.command_topic}
                 await asyncio.sleep(0.05)
 
-        tasks = [asyncio.create_task(receive_inputs()), asyncio.create_task(transmit_targets())]
+        async def send_status():
+            nonlocal token_seq
+            pending = None
+            try:
+                while True:
+                    if latest_status is None:
+                        await asyncio.sleep(0.05)
+                        continue
+                    token_seq += 1
+                    now = time.monotonic()
+                    issued_tokens[token_seq] = now
+                    for old_token, at in list(issued_tokens.items()):
+                        if now - at > settings.control_watchdog_timeout:
+                            del issued_tokens[old_token]
+                    pending = asyncio.create_task(websocket.send_json({**latest_status, "token": token_seq}))
+                    while True:
+                        # Retry the wait, not the send: cancelling a timed-out
+                        # ASGI send can damage an otherwise live connection.
+                        done, _ = await asyncio.wait((pending,), timeout=settings.control_watchdog_timeout)
+                        if not done:
+                            communication_error("send", "서버 응답 송신 지연")
+                        else:
+                            pending.result()  # Actual transport failures end the session.
+                            health.success("send")
+                            break
+                    pending = None
+                    await asyncio.sleep(0.05)
+            finally:
+                if pending is not None:
+                    pending.cancel()
+                    await asyncio.gather(pending, return_exceptions=True)
+
+        tasks = [asyncio.create_task(receive_inputs()), asyncio.create_task(transmit_targets()),
+                 asyncio.create_task(send_status())]
         try:
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:

@@ -126,9 +126,10 @@ transition: 0 STARTUP, 1 DRIVING, 2 BRAKING, 3 STEERING, 4 SETTLING, 5 EMERGENCY
 | 10 | 조향 보정 유효 |
 | 11 | 적용 지령 및 적용 모드 유효 |
 | 12 | 요청 운동 모드 PIVOT; bit4 유효일 때 해석 |
-| 13–15 | 예약 |
+| 13 | RC_SIGNAL_LOST: 최신 유효 RC 모드 펄스가 수신기 failsafe 구간(1900µs 이상) |
+| 14–15 | 예약 |
 
-FAILSAFE(5)는 MCU의 제어 신호 상실 비상 정지 상태다. 복구 절차에서 POWERDOWN을 선택한 동안은 mode=3, state=3 및 flags bit5/7=1로 비상 정지를 계속 보고한다. 정상 USB AUTO를 유지하는 수신기 failsafe는 mode=2로 보고하며, 현재 패킷에는 원시 수신기 모드·RC 유실 여부·USB 이상 연속/누적 횟수가 별도로 없다. AUTO만 보고 RC 무선 연결이 정상이라고 판단할 수 없다.
+FAILSAFE(5)는 MCU의 제어 신호 상실 비상 정지 상태다. 복구 절차에서 POWERDOWN을 선택한 동안은 mode=3, state=3 및 flags bit5/7=1로 비상 정지를 계속 보고한다. Wheel-Dragoon `80abe79`부터 정상 USB AUTO를 유지하는 수신기 failsafe는 mode=2를 유지하면서 flags bit13=1로 RC 신호 상실을 별도 보고한다. 정상 범위 펄스가 돌아오면 비상정지 래치와 관계없이 bit13=0으로 복귀한다. 펄스 수신 중단 타이머나 유실 이력이 아니며 원시 RC 모드·USB 이상 연속/누적 횟수는 별도로 없다. 이전 펌웨어도 동일한 wire version을 사용하므로 bit13=0만으로 펌웨어 지원 여부나 실제 무선 연결 정상을 증명하지 않는다.
 
 일반 요청은 v·θ, PIVOT 요청은 ω를 사용한다. θ는 가상 전륜 중앙 조향각이며 좌우 실측 조향각이 아니다. 적용 운동 모드는 유효 운용 mode와 별도다. STEERING/SETTLING/EMERGENCY_STOP 등 표현 불가 자세에서 적용 모드=255, bit11=0, 적용값=0이 올 수 있으므로 무효 0을 실제 정지·직진으로 해석하지 않는다.
 

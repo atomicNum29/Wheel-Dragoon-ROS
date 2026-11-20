@@ -71,6 +71,15 @@ class TeleopState:
         self.steering_step = 0
         self.blocked = {"keyboard": True, "mouse": True}
 
+    def stop_speed(self):
+        """Discard held motion immediately, preserving the current steering angle."""
+        self.values[0] = self.values[2] = 0.0
+        self.axes = [0.0, 0.0]
+        self.active = False
+        self.held = {"keyboard": False, "mouse": False}
+        self.blocked = {"keyboard": False, "mouse": False}
+        self.input_epoch += 1
+
     def input(self, source, active, x, y, steer_delta=0):
         if source not in self.blocked or type(active) is not bool:
             raise ValueError("잘못된 입력 방식")

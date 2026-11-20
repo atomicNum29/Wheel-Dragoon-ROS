@@ -85,7 +85,7 @@ CAMERA_SOURCE=synthetic ros2 run my_car_web_monitor web_monitor_node
 | `WEBRTC_PACKET_MAX` | `1100` | WebRTC 인코더 RTP payload 크기 설정 |
 | `LOG_LEVEL` | `info` | 로그 수준 |
 
-현재 제어에는 `MCU_COMMAND_TOPIC=/mcu_bridge_node/command`, `CONTROL_RAMP_SECONDS=1.0`, `CONTROL_WATCHDOG_TIMEOUT=0.3`을 사용한다. 마우스 복귀 시간은 `CONTROL_MOUSE_RETURN_SECONDS=2.0`이다. 두 시간은 유한한 양수, watchdog은 0 초과 0.5 미만이어야 한다. 이전 Twist UI의 속도 설정은 코드에 남아 있지만 새 조작부에는 사용하지 않는다. `CMD_VEL_TOPIC=/cmd_vel`, `CONTROL_LINEAR_SPEED=2.0`, `CONTROL_ANGULAR_SPEED=3.0`, 각 축 MIN=0.0, DEFAULT=0.2/0.3, `CONTROL_WATCHDOG_TIMEOUT=0.3`이 기본값이다. 속도 설정은 여전히 시작 시 유한한 `0 ≤ min ≤ default ≤ max` 검사를 수행한다.
+현재 제어에는 `MCU_COMMAND_TOPIC=/mcu_bridge_node/command`, `CONTROL_RAMP_SECONDS=1.0`, `CONTROL_WATCHDOG_TIMEOUT=0.3`을 사용한다. 이 값은 웹 오류 1회 판정 간격·토큰 유효기간·상태 송신 제한·MCU 상태 신선도에 사용하며, 웹 제어권 해제 시간은 아니다. 마우스 복귀 시간은 `CONTROL_MOUSE_RETURN_SECONDS=2.0`이다. 두 시간은 유한한 양수, watchdog은 0 초과 0.5 미만이어야 한다. 이전 Twist UI의 속도 설정은 코드에 남아 있지만 새 조작부에는 사용하지 않는다. `CMD_VEL_TOPIC=/cmd_vel`, `CONTROL_LINEAR_SPEED=2.0`, `CONTROL_ANGULAR_SPEED=3.0`, 각 축 MIN=0.0, DEFAULT=0.2/0.3, `CONTROL_WATCHDOG_TIMEOUT=0.3`이 기본값이다. 속도 설정은 여전히 시작 시 유한한 `0 ≤ min ≤ default ≤ max` 검사를 수행한다.
 
 ## HTTP / WebSocket
 
@@ -160,15 +160,27 @@ ROS 영상은 mono8/8UC1/rgb8/bgr8/rgba8/bgra8와 JPEG/PNG 압축을 지원한�
 
 이는 MCU 생성 지령 기반 확인이며 실제 휠 정지 또는 개별 명령 ACK가 아니다. 0x87에는 명령 수락 seq echo가 없으므로 특정 요청과의 엄밀한 일대일 대응은 보장하지 않는다. STEERING/SETTLING 등 적용 지령 무효 상태의 0은 정지 확인에 사용하지 않는다.
 
-서버 `teleop.py`가 입력 중재와 ramp를 수행한다. `/ws/control`은 정규화 축 x/y와 source/active, 일반 키보드의 steer_delta(-1/0/+1), mode/limits 요청, 정상 stop, estop/clear_estop, heartbeat를 받는다. 입력 이벤트는 증가하는 event_id와 최근 서버 응답 token을 포함한다. token이 watchdog보다 오래되면 세션을 닫아 지연된 요청의 재생을 줄인다. 응답 control_state는 owner, pivot, neutral, 웹 입력, 실제 outgoing, enabled, authority, limits, steering_step, switching/pending_pivot, input_epoch, estop, control_signal_estop, token, 마지막 처리 event_id를 담는다. 입력·모드 요청은 최신 input_epoch도 포함하며 모드 전환·캐시 초기화 이전의 요청은 폐기한다.
+서버 `teleop.py`가 입력 중재와 ramp를 수행한다. `/ws/control`은 입력·mode/limits·stop·focus·torque·estop/clear_estop·heartbeat를 받는다. 입력 이벤트는 증가하는 event_id, 최근 서버 응답 token, input_epoch을 포함한다. 오래되거나 잘못된 토큰·잘못된 요청은 적용하지 않고 통신 오류로 집계한다. 이전 input_epoch의 입력은 폐기한다. heartbeat는 포커스와 현재 키/드래그 유지 여부를 전달한다. 키 해제 요청이 유실되어도 새 heartbeat로 해제 상태를 전달하며 heartbeat만으로 주행을 시작하지 않는다.
 
-브라우저 heartbeat와 목표 송신은 20Hz다. 0.3초 브라우저 입력 만료·WebSocket 단절·서버 송신 지연 시 세션을 닫고 enable=0을 요청한다. RC 모드 변경·MCU 피드백 만료만으로 웹 세션을 닫지는 않는다. 피드백 만료나 연결/CONTROL 세션 경계 변경에서는 입력·조향 단계를 초기화하고 0·disable로 대기한다. 진행 중인 모드 전환은 새 피드백으로 정지 확인을 다시 시작한다. 단순 RC 모드 변경은 기존 웹 입력을 유지한다. 브리지의 명령 만료는 별도 0.3초이며 MCU는 수락 명령 기준 500ms timeout을 사용한다. 탭 숨김/창 포커스 이탈도 연결을 닫는다. 다시 연결하고 새 입력을 해야 하며 이전 목표를 재생하지 않는다. 이들은 물리적 정지 확인이 아니다.
+웹 제어권은 실제 WebSocket 단절·사용자 연결 해제·페이지 종료 또는 더 이상 송수신할 수 없는 연결 오류에서만 해제한다. 종료 시 0·disable을 한 번 발행하고 세션을 정리한다. 회복 가능한 토큰 오류·입력 오류·입력 수신 공백·상태 송신 지연·브라우저 송신 적체·응답 해석 오류는 연결과 제어권을 유지한다. 브라우저 heartbeat와 ROS 목표 발행은 각각 약 20Hz이며 키·드래그 이벤트 요청은 별도로 추가된다. 서버 상태 송신과 ROS 목표 발행을 별도 작업으로 수행하므로 상태 응답 지연만으로 ROS 명령 발행이 멈추지 않는다.
 
-`중립 복귀`는 조향 단계 0과 속도 정상 ramp, `구동 해제`는 세션 종료/enable=0이다. `비상정지`는 AUTO의 TQ-OFF와 비상 조향 자세를 요청하며 일반 정지와 다르다. host estop은 세션 재연결이나 timeout으로 자동 해제하지 않고 별도 해제 버튼을 사용한다. RC MANUAL/PIVOT을 강제로 정지시키는 기능은 아니다.
+통신 오류는 연결별로 누적 합산하며, 서버 수신/송신·브라우저 송신/응답 오류의 연속 횟수는 각각 관리한다. 한 방향의 정상이 다른 방향의 연속 오류를 지우지 않는다. 어느 경로든 연속 3회 또는 전체 누적 10회에서 입력과 진행 중인 모드 전환을 초기화하고 0 목표를 계속 발행한다. 정상 AUTO·토크 활성 상태에서는 enable=1을 유지하며 estop을 새로 설정하지 않는다. 한계 전에는 기존 동작을 유지하며 단발 오류만으로 정지하지 않는다. 정지 후 heartbeat만으로 이전 주행을 재개하지 않으며 새 input_epoch의 새 조작이 필요하다.
+
+정상 처리된 최신 토큰의 클라이언트 요청 100회가 연속되면 누적값을 1 차감한다. 오류가 발생하면 차감용 정상 연속 횟수를 0으로 초기화한다. 예를 들어 누적 9회는 정상 요청 연속 900회에서 0이 된다. 정상 요청은 해당 수신 경로의 연속 오류 횟수를 초기화하고, 새 연결은 전체 카운트를 초기화한다. 오류 종류·연속 횟수·누적값·정지 한계 여부 및 누적 차감은 서버 터미널 로그에만 기록하며 웹 화면에 카운터를 표시하지 않는다.
+
+입력 수신 공백과 브라우저 송신 대기량 2048바이트 초과는 0.3초 간격으로 재판정한다. 서버 상태 송신은 0.3초 제한 초과마다 오류 1회다. 브라우저 오류는 세션별 증가 카운터로 계속 전달하며 서버는 증가분만 집계·로그를 남긴다. 오래된 토큰 요청이 폐기되어도 다음 정상 요청에서 오류 내역을 전달하며 중복 집계하지 않는다. 보고 전달도 불가능한 동안은 서버의 입력 수신 공백 집계가 정지를 처리한다. 회복 가능한 지연은 제어권을 해제하지 않는다.
+
+RC 모드 변경·MCU 피드백 만료만으로 웹 세션을 닫지 않는다. MCU 피드백 만료나 연결/CONTROL 세션 경계 변경에서는 기존대로 입력·조향 단계를 초기화한다. AUTO가 아니거나 MCU 상태가 오래되었거나 드라이버 전원 차단/시작 대기인 경우 0·disable로 대기한다. ROS 브리지의 명령 만료는 별도 0.3초이며 MCU는 마지막 수락 명령 기준 500ms timeout을 사용한다. 이 MCU/ROS 보호 기준은 이번 웹 통신 정책 변경 대상이 아니다.
+
+탭 숨김/창 포커스 이탈은 연결과 현재 조향각을 유지하고 v·ω 명령만 즉시 0으로 고정한다. 이때 브라우저 타이머 지연으로 인한 입력 공백은 집계하지 않는다. 포커스 복귀 후 새 입력부터 받으며 이전 주행 입력을 재생하지 않는다. 실제 감속은 MCU가 처리하며 물리적 정지 확인을 뜻하지 않는다.
+
+`중립 복귀`는 조향 단계 0과 속도 정상 ramp를 사용한다. `토크 해제`는 제어 연결과 주기적 패킷 전송을 유지하면서 운동 명령 0·enable=0을 계속 발행한다. 버튼은 `토크 활성화`로 바뀌며 명시적으로 다시 켠 뒤 새 입력부터 받는다. RC 모드 변경·통신 복구·포커스 복귀로 토크를 자동 재활성화하지 않는다. `연결 해제`는 세션을 종료하여 제어권을 반납한다.
+
+`비상정지`는 AUTO의 TQ-OFF와 비상 조향 자세를 요청한다. host estop은 세션 재연결이나 timeout으로 자동 해제하지 않고 별도 해제 버튼을 사용한다. RC MANUAL/PIVOT을 강제로 정지시키는 기능은 아니다.
 
 ## MCU 제어 신호 상실 비상 정지
 
-Wheel-Dragoon `8bf301e`의 FAILSAFE(5)와 flags bit5 의미 확장을 지원한다. 웹에는 현재 운용 모드와 비상정지 상태만 표시하고 사용법·복구 안내·USB 이상 횟수 화면은 추가하지 않는다. 조작 안내 문구도 상태 표시와 분리하여 문서에서 제공한다.
+Wheel-Dragoon `80abe79`의 FAILSAFE(5), flags bit5 의미 확장 및 flags bit13 RC_SIGNAL_LOST를 지원한다. 웹 상단 운전 상태에는 운용 모드·비상정지와 별도로 RC 신호 상태를 표시하고 사용법·복구 안내·USB 이상 횟수 화면은 추가하지 않는다. 조작 안내 문구도 상태 표시와 분리하여 문서에서 제공한다.
 
 `control.py`의 `control_signal_estop`은 원시 wire 필드가 아니라 기존 상태 조합에서 계산한 값이다. mode=5이거나, 복구 중 mode=POWERDOWN(3)·state=ESTOP(3)·flags bit5/7이 모두 활성인 경우에만 이 경로로 판단한다. typed ROS 메시지는 원래 mode/state/flags를 보존하고 웹 상태 JSON과 control_state에 파생 bool을 제공한다.
 
@@ -178,7 +190,7 @@ MCU 제어 신호 상실 비상 정지를 host estop으로 자동 래치하지 �
 
 수신기 failsafe로 USB AUTO를 유지하는 중 웹 비상정지를 누르면 host estop이 활성화되어 MCU의 AUTO 유지 조건도 해제된다. 이때 MCU는 제어 신호 상실 비상 정지를 래치하고 릴레이를 차단한다. RC POWERDOWN → STOP으로 MCU를 복구한 뒤 웹 host estop도 별도로 해제해야 한다. 웹 비상정지 요청은 유효한 제어 연결에서 전달되며, 통신 단절 시 버튼 조작만으로 MCU 수신을 보장하지 않는다.
 
-수신기 failsafe 중에도 MCU가 정상 USB AUTO 권한을 유지하면 mode=2를 보내므로 웹의 enable과 현재 입력은 그대로 유지된다. 이 경우 현재 프로토콜로 RC 무선 연결 정상/유실을 구분할 수 없으므로 정상 RC 링크라고 표시하거나 유실 배지를 추정하지 않는다. USB 이상 연속/누적 횟수와 복구 중립화 전용 상태도 wire에 없으며, 이를 새 측정값처럼 만들지 않는다. 상세 복구·PWM·이상 한계는 [브리지 문서](../my_car_mcu_bridge/README.md#수신기-failsafe와-제어-신호-상실-복구)를 따른다.
+수신기 failsafe 중에도 MCU가 정상 USB AUTO 권한을 유지하면 mode=2를 보내므로 웹의 enable과 현재 입력은 그대로 유지된다. 웹은 mode나 비상정지로 추정하지 않고 최신 상태의 flags bit13(0x2000)으로 `RC 신호 끊김` / `RC 신호 정상`을 표시한다. 상태 미수신·1초 초과 지연·서버 연결 단절·구형 메시지·잘못된 flags에서는 `RC 상태 확인 불가`로 표시한다. 이 표시는 제어 입력이나 estop을 변경하지 않는다. bit13은 최신 유효 모드 펄스의 failsafe 여부로, 펄스 수신 중단 타이머가 아니다. 구형 펌웨어도 동일한 wire version을 사용하므로 bit13=0을 실제 무선 연결 정상으로 단정하지 않는다. USB 이상 연속/누적 횟수와 복구 중립화 전용 상태도 wire에 없으며, 이를 새 측정값처럼 만들지 않는다. 상세 복구·PWM·이상 한계는 [브리지 문서](../my_car_mcu_bridge/README.md#수신기-failsafe와-제어-신호-상실-복구)를 따른다.
 
 ## Capture-to-display latency estimate
 

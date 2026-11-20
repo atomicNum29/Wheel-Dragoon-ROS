@@ -18,14 +18,41 @@
   let inputEpoch = null, switching = false, pointerHeld = false, steeringStep = 0;
   let mouseIgnored = false;
   let noticeUntil = 0;
+  let torqueEnabled = true;
+  let communicationErrors = {client_send:0, client_receive:0};
+  let lastBacklogError = -Infinity;
+  let focused = document.hasFocus() && !document.hidden;
+  function updateFocus() {
+    focused = document.hasFocus() && !document.hidden;
+    if (!focused) {
+      physical.clear();
+      pointerHeld = false;
+      resetInput();
+    }
+    send({type:"focus", focused});
+  }
   function notice(message) { error.textContent = message; noticeUntil = performance.now() + 2000; }
 
   function available() { return socket?.readyState === WebSocket.OPEN && token !== null; }
   function send(payload, event = true) {
     if (!available()) return false;
-    if (socket.bufferedAmount > 2048) { closeControl("송신 지연 · 다시 연결하세요"); return false; }
+    if (socket.bufferedAmount > 2048) {
+      if (performance.now() - lastBacklogError >= 300) {
+        communicationErrors.client_send += 1;
+        lastBacklogError = performance.now();
+      }
+      return false;
+    }
     if (event) payload.event_id = ++eventId;
-    socket.send(JSON.stringify({...payload, token, input_epoch:inputEpoch}));
+    try {
+      socket.send(JSON.stringify({...payload, token, input_epoch:inputEpoch,
+        communication_errors:communicationErrors}));
+    } catch {
+      communicationErrors.client_send += 1;
+      return false;
+    }
+    // Keep session totals: a discarded stale-token request must not lose its
+    // error report. The server counts only increases in these totals.
     return true;
   }
   function resetInput() {
@@ -46,12 +73,15 @@
     resetInput();
     previous?.close();
     byId("control-state").textContent = "미연결";
-    if (previous && !["제어 연결 해제", "구동 해제", "미연결"].includes(reason)) notice(reason);
+    if (previous && !["제어 연결 해제", "미연결"].includes(reason)) notice(reason);
     limitsPending = null;
     limitsReady = false;
     inputEpoch = null;
     switching = false;
     steeringStep = 0;
+    torqueEnabled = true;
+    byId("disable-control").textContent = "토크 해제";
+    byId("disable-control").disabled = true;
     modeButton.disabled = false;
     byId("clear-estop").disabled = false;
     configureMode();
@@ -112,6 +142,8 @@
     error.textContent = "";
     resetInput();
     eventId = 0;
+    communicationErrors = {client_send:0, client_receive:0};
+    lastBacklogError = -Infinity;
     initializeLimits = true;
     inputEpoch = null;
     switching = false;
@@ -124,19 +156,37 @@
     ws.addEventListener("message", event => {
       if (socket !== ws) return;
       let data;
-      try { data = JSON.parse(event.data); } catch { closeControl("잘못된 서버 응답"); return; }
+      try {
+        data = JSON.parse(event.data);
+        if (!data || typeof data !== "object") throw new Error("invalid response");
+        if (!["control_state", "error"].includes(data.type)) throw new Error("invalid response type");
+        if (data.type === "control_state" &&
+            (!Number.isInteger(data.token) || !Array.isArray(data.limits) || data.limits.length !== 3 ||
+             !data.limits.every(value => Number.isFinite(value) && value > 0) ||
+             typeof data.torque_enabled !== "boolean" || !Number.isInteger(data.input_epoch) ||
+             ![data.linear, data.steering, data.angular].every(Number.isFinite))) {
+          throw new Error("invalid control state");
+        }
+      } catch {
+        communicationErrors.client_receive += 1;
+        return;
+      }
       if (data.type === "error") { serverError = true; notice(data.message); return; }
       if (data.type !== "control_state") return;
       token = data.token;
       if (heartbeat === null) {
         // This socket never reconnects/arms automatically.
         heartbeat = setInterval(() => {
-          if (document.hidden) closeControl("탭 이탈 · 다시 연결하세요");
-          else send({type:"heartbeat"}, false);
+          send({type:"heartbeat", focused,
+            keyboard_active:accepted.size > 0, mouse_active:pointerId !== null}, false);
         }, 50);
+        updateFocus();
       }
       byId("control-state").textContent = data.estop || data.control_signal_estop ? "비상정지" : data.switching ? "연결됨·정지 확인" : data.enabled ? "연결됨·제어" : "연결됨·대기";
       disconnect.disabled = false;
+      torqueEnabled = data.torque_enabled;
+      byId("disable-control").textContent = torqueEnabled ? "토크 해제" : "토크 활성화";
+      byId("disable-control").disabled = false;
       if (performance.now() > noticeUntil) error.textContent = data.message || "";
       estop = data.estop || data.control_signal_estop;
       byId("clear-estop").disabled = Boolean(data.control_signal_estop);
@@ -183,7 +233,9 @@
     ws.addEventListener("error", () => { if (socket === ws) error.textContent = "제어 연결 실패"; });
   });
   disconnect.addEventListener("click", () => closeControl());
-  byId("disable-control").addEventListener("click", () => closeControl("구동 해제"));
+  byId("disable-control").addEventListener("click", () => {
+    if (send({type:"torque", enabled:!torqueEnabled})) resetInput();
+  });
   byId("normal-stop").addEventListener("click", () => {
     accepted.clear();
     pointerId = null;
@@ -206,11 +258,12 @@
     });
   });
   window.addEventListener("keydown", event => {
+    if (!focused) return;
     if (event.code === "KeyP" && !event.repeat && !event.ctrlKey && !event.altKey && !event.metaKey && !editable(event.target)) { event.preventDefault(); toggleMode(); return; }
     if (!bindings.has(event.code)) return;
     const wasDown = physical.has(event.code);
     physical.add(event.code);
-    if (!available() || editable(event.target) || event.ctrlKey || event.altKey || event.metaKey) return;
+    if (!available() || !torqueEnabled || editable(event.target) || event.ctrlKey || event.altKey || event.metaKey) return;
     if (!limitsReady) { notice("최대값을 적용한 뒤 조작하세요"); return; }
     event.preventDefault();
     if (event.repeat || wasDown || estop || switching || (pivot && ["forward", "backward"].includes(bindings.get(event.code)))) return;
@@ -240,7 +293,7 @@
     send({type:"input", source:"mouse", active:true, x, y});
   }
   pad.addEventListener("pointerdown", event => {
-    if (event.button !== 0 || !available() || estop || pointerId !== null) return;
+    if (!focused || event.button !== 0 || !available() || !torqueEnabled || estop || pointerId !== null) return;
     pointerHeld = true;
     if (switching) return;
     if (!limitsReady) { notice("최대값을 적용한 뒤 조작하세요"); return; }
@@ -276,9 +329,11 @@
   }
   window.addEventListener("pointerup", clearIgnoredPointer);
   window.addEventListener("pointercancel", clearIgnoredPointer);
-  window.addEventListener("blur", () => { physical.clear(); pointerHeld = false; closeControl("포커스 이탈 · 다시 연결하세요"); });
-  document.addEventListener("visibilitychange", () => { if (document.hidden) closeControl("탭 이탈 · 다시 연결하세요"); });
+  window.addEventListener("blur", updateFocus);
+  window.addEventListener("focus", updateFocus);
+  document.addEventListener("visibilitychange", updateFocus);
   window.addEventListener("pagehide", () => closeControl());
   configureMode();
   disconnect.disabled = true;
+  byId("disable-control").disabled = true;
 })();
