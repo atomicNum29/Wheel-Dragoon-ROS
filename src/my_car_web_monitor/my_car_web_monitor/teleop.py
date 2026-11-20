@@ -6,7 +6,7 @@ class TeleopState:
     def __init__(self, ramp_seconds=1.0, mouse_return_seconds=2.0):
         self.ramp_seconds = ramp_seconds
         self.mouse_return_seconds = mouse_return_seconds
-        self.limits = [2.0, 0.845, 5.0]
+        self.limits = [0.2, 0.845, 0.5]
         self.pivot = False
         self.pending_pivot = None
         self.input_epoch = 0
@@ -20,6 +20,7 @@ class TeleopState:
         self.axes = [0.0, 0.0]
         self.blocked = {"keyboard": False, "mouse": False}
         self.held = {"keyboard": False, "mouse": False}
+        self._limit_ramping = set()
         self.input_epoch += 1
 
     @property
@@ -39,12 +40,29 @@ class TeleopState:
         self._clear_inputs()
 
     def set_limits(self, values):
-        if not self.neutral:
-            raise ValueError("중립에서만 최대값을 변경할 수 있습니다")
         if len(values) != 3 or any(type(x) not in (int, float) or not math.isfinite(x)
                 or not 0 < x <= cap for x, cap in zip(values, (2.0, 0.845, 5.0))):
             raise ValueError("최대값이 MCU 허용 범위를 벗어났습니다")
+        if self.switching:
+            raise ValueError("모드 전환 완료 후 최대값을 변경하세요")
+        if not self.neutral and values[1] != self.limits[1]:
+            raise ValueError("조향각 최대값은 중립에서만 변경할 수 있습니다")
+        if self.owner == "mouse" and self.active:
+            self._limit_ramping.update(index for index in (0, 2) if values[index] != self.limits[index])
         self.limits = list(values)
+
+    def step_speed_limit(self, direction, pivot):
+        if type(direction) is not int or direction not in (-1, 1) or type(pivot) is not bool:
+            raise ValueError("잘못된 최대 속도 조절 요청")
+        if pivot != self.pivot:
+            raise ValueError("현재 운동 모드의 최대 속도만 조절할 수 있습니다")
+        index, cap = (2, 5.0) if pivot else (0, 2.0)
+        values = list(self.limits)
+        value = round(values[index] + direction * 0.1, 3)
+        # Shortcut steps bottom out at 0.1; never increase a manually entered
+        # value below 0.1 when the operator requests a decrease.
+        values[index] = min(cap, max(min(values[index], 0.1), value))
+        self.set_limits(values)
 
     def request_mode(self, pivot):
         if type(pivot) is not bool:
@@ -78,6 +96,7 @@ class TeleopState:
         self.active = False
         self.held = {"keyboard": False, "mouse": False}
         self.blocked = {"keyboard": False, "mouse": False}
+        self._limit_ramping.clear()
         self.input_epoch += 1
 
     def input(self, source, active, x, y, steer_delta=0):
@@ -123,7 +142,7 @@ class TeleopState:
         if self.owner == "keyboard" and not self.pivot:
             targets[1] = self.steering_step * self.limits[1] / 5
         for index, target in enumerate(targets):
-            if ((self.owner == "mouse" and self.active)
+            if ((self.owner == "mouse" and self.active and index not in self._limit_ramping)
                     or (self.owner == "keyboard" and not self.pivot and index == 1)):
                 self.values[index] = target
             else:
@@ -133,6 +152,7 @@ class TeleopState:
                 self.values[index] += max(-step, min(step, delta))
                 if abs(target - self.values[index]) < 1e-9:
                     self.values[index] = target
+                    self._limit_ramping.discard(index)
         if not self.active and not any(self.values) and self.steering_step == 0:
             self.owner = None
         return self.values

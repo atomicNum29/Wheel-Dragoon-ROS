@@ -7,8 +7,10 @@
   const connect = byId("connect-control"), disconnect = byId("disconnect-control");
   const limits = ["linear", "steering", "angular"].map(name => byId(`limit-${name}`));
   const applyLimitsButton = byId("apply-limits"), limitsStatus = byId("limits-status");
-  let desiredLimits = [2.0, 0.845, 5.0];
+  let desiredLimits = [0.2, 0.845, 0.5];
+  let appliedLimits = [...desiredLimits];
   let limitsPending = null, draftRevision = 0, initializeLimits = false, limitsReady = false;
+  let speedLimitPending = null;
   const physical = new Set(), accepted = new Set();
   const bindings = new Map([["KeyW", "forward"], ["ArrowUp", "forward"],
     ["KeyS", "backward"], ["ArrowDown", "backward"], ["KeyA", "left"],
@@ -75,6 +77,7 @@
     byId("control-state").textContent = "미연결";
     if (previous && !["제어 연결 해제", "미연결"].includes(reason)) notice(reason);
     limitsPending = null;
+    speedLimitPending = null;
     limitsReady = false;
     inputEpoch = null;
     switching = false;
@@ -111,8 +114,12 @@
     limits.forEach((input, index) => { input.value = String(values[index]); });
   }
   function applyLimits() {
-    if (!neutral || owner !== null) {
-      notice("중립에서만 최대값을 변경할 수 있습니다");
+    if (switching) {
+      notice("모드 전환 완료 후 최대값을 변경하세요");
+      return;
+    }
+    if ((!neutral || owner !== null) && limits[1].valueAsNumber !== appliedLimits[1]) {
+      notice("조향각 최대값은 중립에서만 변경할 수 있습니다");
       return;
     }
     if (limits.some(input => input.value.trim() === "" || !input.checkValidity() || !Number.isFinite(input.valueAsNumber))) {
@@ -136,6 +143,14 @@
     pad.dataset.pivot = String(pivot);
     pad.querySelector(".joystick-label").textContent = pivot ? "← 좌회전 · 우회전 →" : "↑ 전진 · 좌우 조향 · ↓ 후진";
     pad.setAttribute("aria-label", pivot ? "PIVOT 1차원 조이스틱: 왼쪽 좌회전, 오른쪽 우회전" : "일반 2차원 조이스틱: 위 전진, 아래 후진, 좌우 조향");
+  }
+  function stepSpeedLimit(direction) {
+    if (!available() || !limitsReady || switching || estop) return;
+    if (send({type:"speed_limit", direction, pivot})) {
+      draftRevision += 1;
+      speedLimitPending = {id:eventId, index:pivot ? 2 : 0, revision:draftRevision};
+      limitsStatus.textContent = "최대 속도 적용 중";
+    }
   }
   connect.addEventListener("click", () => {
     if (socket) return;
@@ -185,6 +200,7 @@
       byId("control-state").textContent = data.estop || data.control_signal_estop ? "비상정지" : data.switching ? "연결됨·정지 확인" : data.enabled ? "연결됨·제어" : "연결됨·대기";
       disconnect.disabled = false;
       torqueEnabled = data.torque_enabled;
+      appliedLimits = [...data.limits];
       byId("disable-control").textContent = torqueEnabled ? "토크 해제" : "토크 활성화";
       byId("disable-control").disabled = false;
       if (performance.now() > noticeUntil) error.textContent = data.message || "";
@@ -220,14 +236,25 @@
         limitsPending = null;
         limitsReady = true;
       }
-      limits.forEach(input => { input.disabled = !neutral || owner !== null; });
-      applyLimitsButton.disabled = !neutral || owner !== null || limitsPending !== null;
+      if (speedLimitPending && data.last_event >= speedLimitPending.id) {
+        if (draftRevision === speedLimitPending.revision) {
+          const index = speedLimitPending.index;
+          desiredLimits[index] = data.limits[index];
+          limits[index].value = String(data.limits[index]);
+          limitsStatus.textContent = data.message || "최대 속도 적용됨";
+        }
+        speedLimitPending = null;
+      }
+      limits.forEach((input, index) => {
+        input.disabled = switching || (index === 1 && (!neutral || owner !== null));
+      });
+      applyLimitsButton.disabled = switching || limitsPending !== null;
       byId("input-owner").textContent = switching ? "정지 지령 확인 대기" : owner ? owner === "keyboard" ? "키보드 우선 · 조향 단계 유지" : "마우스 우선 · 중립 복귀까지 유지" : "입력 대기";
       byId("local-command").textContent = `웹 입력: v ${data.linear.toFixed(3)} m/s · θ ${data.steering.toFixed(3)} rad · ω ${data.angular.toFixed(3)} rad/s | 송신 ${data.enabled ? "enable" : "0 · disable"}`;
       const x = pivot ? data.angular / data.limits[2] : data.steering / data.limits[1];
       const y = pivot ? 0 : data.linear / data.limits[0];
-      knob.style.left = `${50 - x * 44}%`;
-      knob.style.top = `${50 - y * 40}%`;
+      knob.style.left = `${50 - Math.max(-1, Math.min(1, x)) * 44}%`;
+      knob.style.top = `${50 - Math.max(-1, Math.min(1, y)) * 40}%`;
     });
     ws.addEventListener("close", () => { if (socket === ws) closeControl(serverError ? "미연결" : "연결 종료 · 다시 연결하세요"); });
     ws.addEventListener("error", () => { if (socket === ws) error.textContent = "제어 연결 실패"; });
@@ -259,6 +286,13 @@
   });
   window.addEventListener("keydown", event => {
     if (!focused) return;
+    if (["Digit1", "Digit2", "Numpad1", "Numpad2"].includes(event.code)) {
+      if (event.code.startsWith("Numpad") && !["1", "2"].includes(event.key)) return;
+      if (editable(event.target) || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return;
+      event.preventDefault();
+      if (!event.repeat) stepSpeedLimit(event.code.endsWith("1") ? -1 : 1);
+      return;
+    }
     if (event.code === "KeyP" && !event.repeat && !event.ctrlKey && !event.altKey && !event.metaKey && !editable(event.target)) { event.preventDefault(); toggleMode(); return; }
     if (!bindings.has(event.code)) return;
     const wasDown = physical.has(event.code);

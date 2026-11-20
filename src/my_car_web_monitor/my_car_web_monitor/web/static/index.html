@@ -158,10 +158,11 @@
         <div class="teleop-heading"><h2>웹 주행 제어</h2><button id="toggle-pivot">일반 주행</button><span id="input-owner" class="muted">입력 대기</span></div>
         <div class="teleop-layout">
           <div class="teleop-settings">
-            <label for="limit-linear"><span>최대 선속도</span><input id="limit-linear" type="number" inputmode="decimal" min="0.001" max="2" step="0.001" value="2"><span>m/s</span></label>
+            <label for="limit-linear"><span>최대 선속도</span><input id="limit-linear" type="number" inputmode="decimal" min="0.001" max="2" step="0.001" value="0.2"><span>m/s</span></label>
             <label for="limit-steering"><span>최대 중앙 조향각</span><input id="limit-steering" type="number" inputmode="decimal" min="0.001" max="0.845" step="0.001" value="0.845"><span>rad</span></label>
-            <label for="limit-angular"><span>최대 PIVOT 각속도</span><input id="limit-angular" type="number" inputmode="decimal" min="0.001" max="5" step="0.001" value="5"><span>rad/s</span></label>
+            <label for="limit-angular"><span>최대 PIVOT 각속도</span><input id="limit-angular" type="number" inputmode="decimal" min="0.001" max="5" step="0.001" value="0.5"><span>rad/s</span></label>
             <div class="limit-actions"><button id="apply-limits">최대값 적용</button><span id="limits-status" class="muted" role="status">현재 최대값</span></div>
+            <p class="keyboard-note">1: 최대 속도 감소 · 2: 증가 (현재 모드, 0.1씩)</p>
             <p id="steering-step" class="keyboard-note">조향 단계: 중앙 0 / 5</p>
             <p id="local-command" class="status-list">웹 목표: —</p>
           </div>

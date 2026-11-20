@@ -270,11 +270,11 @@ def create_app(node: Node, settings: Settings) -> FastAPI:
                     event_id = payload.get("event_id")
                     if type(event_id) is not int or event_id <= last_event:
                         raise ValueError("잘못된 입력 순번")
-                    if kind in ("input", "mode", "clear_estop") and control_bridge.feedback()["control_signal_estop"]:
+                    if kind in ("input", "mode", "speed_limit", "clear_estop") and control_bridge.feedback()["control_signal_estop"]:
                         # Firmware recovery is owned by RC POWERDOWN -> STOP.
                         # Ignore these requests without emitting operator instructions.
                         feedback["message"] = ""
-                    elif kind in ("input", "mode") and payload.get("input_epoch") != state.input_epoch:
+                    elif kind in ("input", "mode", "speed_limit") and payload.get("input_epoch") != state.input_epoch:
                         feedback["message"] = "이전 입력은 폐기되었습니다 · 새로 조작하세요"
                     elif kind == "focus":
                         if type(payload.get("focused")) is not bool:
@@ -307,15 +307,18 @@ def create_app(node: Node, settings: Settings) -> FastAPI:
                             feedback["message"] = "정지 지령 확인 대기"
                         else:
                             feedback["message"] = "눌린 키·드래그 또는 진행 중인 전환이 우선합니다"
+                    elif kind == "speed_limit":
+                        try:
+                            state.step_speed_limit(payload.get("direction"), payload.get("pivot"))
+                            feedback["message"] = "최대 속도 적용됨"
+                        except ValueError as error:
+                            feedback["message"] = str(error)
                     elif kind == "limits":
-                        if not state.neutral:
-                            feedback["message"] = "중립에서만 최대값을 변경할 수 있습니다"
-                        else:
-                            try:
-                                state.set_limits([payload.get("linear"), payload.get("steering"), payload.get("angular")])
-                                feedback["message"] = "최대값 적용됨"
-                            except ValueError as error:
-                                feedback["message"] = str(error)
+                        try:
+                            state.set_limits([payload.get("linear"), payload.get("steering"), payload.get("angular")])
+                            feedback["message"] = "최대값 적용됨"
+                        except ValueError as error:
+                            feedback["message"] = str(error)
                     elif kind == "stop":
                         # Normal stop uses the same return ramp and keeps ownership.
                         state.return_to_neutral()
